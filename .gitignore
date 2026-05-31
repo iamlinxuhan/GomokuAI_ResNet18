@@ -45,3 +45,7 @@ config.local.yaml
 
 # PyInstaller
 *.spec
+
+# Project internal references (not for distribution)
+main.py
+需求文档.txt
