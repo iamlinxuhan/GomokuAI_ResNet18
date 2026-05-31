@@ -491,16 +491,41 @@ class TrainingThread(QThread):
         self.trainer: Optional[Trainer] = None
 
     def run(self):
-        """运行训练"""
+        """运行训练（后台线程跑 train_loop，本线程轮询状态）"""
         try:
             self.trainer = Trainer(self.config)
             games_per_iter = self.config.get('training', {}).get('games_per_iteration', 5)
-            self.trainer.train_loop(games_per_iteration=games_per_iter)
+            self._train_error = None
 
-            # 定期更新状态
-            while self.trainer.running:
-                self.status_update.emit(self.trainer.get_status())
+            def _run_train():
+                try:
+                    self.trainer.train_loop(games_per_iteration=games_per_iter)
+                except Exception as e:
+                    self._train_error = e
+
+            bg = threading.Thread(target=_run_train, daemon=True)
+            bg.start()
+
+            # 每 2 秒轮询训练状态并发送到 GUI
+            last_emit_total = -1
+            while bg.is_alive():
+                if self.trainer:
+                    status = self.trainer.get_status()
+                    self.status_update.emit(status)
+                    total = status.get('total_games', 0)
+                    if total > last_emit_total:
+                        self.log_message.emit(
+                            f"已对弈 {total} 局 | 经验池 {status.get('buffer_size', 0)} | "
+                            f"训练步 {status.get('global_step', 0)}"
+                        )
+                        last_emit_total = total
                 self.msleep(2000)
+
+            bg.join()
+            if self._train_error:
+                raise self._train_error
+            if self.trainer:
+                self.status_update.emit(self.trainer.get_status())
         except Exception as e:
             self.log_message.emit(f"训练错误: {e}")
 

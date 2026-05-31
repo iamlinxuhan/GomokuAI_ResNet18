@@ -808,6 +808,11 @@ class Trainer:
                     self.auto_params.c_puct = ap.get('c_puct', 2.5)
                     self.auto_params.games_per_iteration = ap.get('games_per_iteration', 5)
                 logger.info(f"Loaded training state from step {self.global_step}")
+                # 恢复对局计数器
+                self.total_games_self = state.get('total_games_self', 0)
+                self.total_games_trad = state.get('total_games_trad', 0)
+                self.total_games_human = state.get('total_games_human', 0)
+                self.total_nn_wins = state.get('total_nn_wins', 0)
             except Exception as e:
                 logger.warning(f"Failed to load training state: {e}")
 
@@ -826,6 +831,10 @@ class Trainer:
         torch.save({
             'step': self.global_step,
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'total_games_self': self.total_games_self,
+            'total_games_trad': self.total_games_trad,
+            'total_games_human': self.total_games_human,
+            'total_nn_wins': self.total_nn_wins,
             'auto_params': {
                 'mcts_simulations': self.auto_params.mcts_simulations,
                 'temperature': self.auto_params.temperature,
@@ -856,6 +865,8 @@ class Trainer:
             data = worker.play_game()
             self.replay_buffer.add_batch(data)
             self.total_games_self += 1
+            logger.info(f"Self-play {self.total_games_self} 局完成 "
+                        f"(步数={len(data)}, 经验池={len(self.replay_buffer)})")
 
     def _generate_traditional_data(self, num_games: int = 1):
         """生成传统AI对抗数据"""
@@ -881,6 +892,10 @@ class Trainer:
                 self.adjuster.record_result(nn_won)
                 if nn_won:
                     self.total_nn_wins += 1
+            logger.info(f"Trad-play {self.total_games_trad} 局完成 "
+                        f"(NN胜={nn_won if data else 'draw'}, "
+                        f"总胜={self.total_nn_wins}, "
+                        f"经验池={len(self.replay_buffer)})")
 
             # 检查是否需要调整难度
             if self.adjuster.should_adjust():
@@ -1178,6 +1193,8 @@ class Trainer:
 
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
+        except Exception as e:
+            logger.error(f"Training error at step {self.global_step}: {e}", exc_info=True)
         finally:
             self._save_checkpoint()
             logger.info(f"Training stopped at step {self.global_step}")
