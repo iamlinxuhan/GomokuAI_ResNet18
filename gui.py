@@ -821,6 +821,11 @@ class TrainingPanel(QDialog):
         self.btn_pause.setEnabled(True)
         self.btn_stop.setEnabled(True)
 
+        # 训练启动后隐藏主窗口GUI，只保留监控面板
+        main_window = self.parent()
+        if main_window:
+            main_window.hide()
+
         self._append_log("训练已启动...")
         self._append_log(f"模式: {modes}")
         self._append_log(f"设备: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
@@ -849,6 +854,11 @@ class TrainingPanel(QDialog):
         self.btn_start.setEnabled(True)
         self.btn_pause.setEnabled(False)
         self.btn_stop.setEnabled(False)
+
+        # 训练结束后恢复显示主窗口GUI
+        main_window = self.parent()
+        if main_window:
+            main_window.show()
 
     def _save_checkpoint(self):
         """保存检查点"""
@@ -893,6 +903,13 @@ class TrainingPanel(QDialog):
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{ts}] {msg}")
+
+    def closeEvent(self, event):
+        """关闭面板时恢复主窗口GUI"""
+        main_window = self.parent()
+        if main_window and not main_window.isVisible():
+            main_window.show()
+        super().closeEvent(event)
 
     def _start_status_update(self):
         """定期更新状态"""
@@ -1469,9 +1486,10 @@ class MainWindow(QMainWindow):
             self.ai_timer.start(2000)
 
     def _open_training_panel(self):
-        """打开训练面板"""
+        """打开训练面板（非模态，允许训练时独立存在）"""
         panel = TrainingPanel(self)
-        panel.exec()
+        panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        panel.show()
 
 
 # ============================================================================
