@@ -735,6 +735,20 @@ class TrainingPanel(QDialog):
         self.lbl_elo = QLabel("ELO: -")
         monitor_layout.addWidget(self.lbl_elo)
 
+        # 训练统计概要
+        self.lbl_total_games = QLabel("总训练场数: 0")
+        self.lbl_total_games.setFont(QFont('Arial', 11, QFont.Weight.Bold))
+        monitor_layout.addWidget(self.lbl_total_games)
+
+        self.lbl_total_wins = QLabel("总胜利: 0")
+        monitor_layout.addWidget(self.lbl_total_wins)
+
+        self.lbl_recent_wins = QLabel("100局内胜利: 0")
+        monitor_layout.addWidget(self.lbl_recent_wins)
+
+        self.lbl_recent_win_rate = QLabel("100局内胜率: -")
+        monitor_layout.addWidget(self.lbl_recent_win_rate)
+
         # 进度条
         self.progress_bar = QProgressBar()
         monitor_layout.addWidget(self.progress_bar)
@@ -851,6 +865,13 @@ class TrainingPanel(QDialog):
         self.lbl_trad_wr.setText(f"NN vs 传统AI胜率: {wr:.1%}")
         self.lbl_elo.setText(f"ELO: current={status.get('elo_current', 0):.0f}, "
                              f"best={status.get('elo_best', 0):.0f}")
+
+        # 训练统计概要
+        self.lbl_total_games.setText(f"总训练场数: {status.get('total_games', 0)}")
+        self.lbl_total_wins.setText(f"总胜利: {status.get('total_wins', 0)}")
+        self.lbl_recent_wins.setText(f"100局内胜利: {status.get('recent_wins', 0)}")
+        rwr = status.get('recent_win_rate', 0)
+        self.lbl_recent_win_rate.setText(f"100局内胜率: {rwr:.1%}")
 
         if status.get('loss_history'):
             last = status['loss_history'][-1]

@@ -761,6 +761,7 @@ class Trainer:
         self.total_games_self = 0
         self.total_games_trad = 0
         self.total_games_human = 0
+        self.total_nn_wins = 0                     # 总胜场（NN vs 传统AI/人类）
         self.running = False
         self.paused = False
 
@@ -878,6 +879,8 @@ class Trainer:
                 last_value = data[-1][2]
                 nn_won = (last_value > 0)
                 self.adjuster.record_result(nn_won)
+                if nn_won:
+                    self.total_nn_wins += 1
 
             # 检查是否需要调整难度
             if self.adjuster.should_adjust():
@@ -1195,6 +1198,12 @@ class Trainer:
 
     def get_status(self) -> Dict[str, Any]:
         """获取训练状态"""
+        total_games = self.total_games_self + self.total_games_trad + self.total_games_human
+        recent_results = self.adjuster.recent_results
+        recent_wins = sum(1 for r in recent_results if r)
+        recent_total = len(recent_results)
+        recent_win_rate = recent_wins / recent_total if recent_total > 0 else 0
+
         return {
             'global_step': self.global_step,
             'running': self.running,
@@ -1204,6 +1213,10 @@ class Trainer:
             'total_games_self': self.total_games_self,
             'total_games_trad': self.total_games_trad,
             'total_games_human': self.total_games_human,
+            'total_games': total_games,
+            'total_wins': self.total_nn_wins,
+            'recent_wins': recent_wins,
+            'recent_win_rate': recent_win_rate,
             'trad_depth': self.adjuster.current_depth,
             'trad_win_rate': self.adjuster.get_win_rate(),
             'elo_current': self.elo_system.get_elo('current'),
