@@ -902,14 +902,17 @@ class Trainer:
                 self.adjuster.adjust()
 
     def _train_step(self) -> Dict[str, float]:
-        """单步训练"""
-        if len(self.replay_buffer) < self.batch_size:
+        """单步训练（自适应batch：经验池不足时用较小batch）"""
+        min_train_samples = 64   # 最低触发训练的样本数
+        buf_size = len(self.replay_buffer)
+        if buf_size < min_train_samples:
             return {}
 
         self.model.train()
 
-        # 采样批次
-        states, policy_targets, value_targets = self.replay_buffer.sample(self.batch_size)
+        # 自适应采样：经验池不够时用实际数量，否则用标准batch_size
+        actual_batch = min(buf_size, self.batch_size)
+        states, policy_targets, value_targets = self.replay_buffer.sample(actual_batch)
 
         states = torch.from_numpy(states).to(self.device)
         policy_targets = torch.from_numpy(policy_targets).to(self.device)
@@ -937,6 +940,14 @@ class Trainer:
             self.scheduler.step()
 
         self.global_step += 1
+
+        if self.global_step % 5 == 0:  # 每5步打一次日志，避免刷屏
+            logger.info(
+                f"Train step {self.global_step} | "
+                f"loss={total_loss.item():.4f} (p={policy_loss.item():.4f}, v={value_loss.item():.4f}) | "
+                f"batch={actual_batch} | buffer={buf_size} | "
+                f"lr={self.optimizer.param_groups[0]['lr']:.6f}"
+            )
 
         return {
             'total_loss': total_loss.item(),
@@ -1108,10 +1119,12 @@ class Trainer:
                 if 'trad' in self.modes:
                     self._generate_traditional_data(auto_games)
 
-                # 训练步骤
+                # 训练步骤（经验池>=64即开始训练，自适应batch）
                 loss_info = {}
-                if len(self.replay_buffer) >= self.batch_size:
-                    for _ in range(10):  # 每轮训练10步
+                min_train = 64
+                if len(self.replay_buffer) >= min_train:
+                    steps_this_round = min(10, max(1, len(self.replay_buffer) // max(min_train, 64)))
+                    for _ in range(steps_this_round):
                         if not self.running:
                             break
                         loss_info = self._train_step()
