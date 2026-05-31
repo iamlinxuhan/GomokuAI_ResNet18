@@ -530,6 +530,7 @@ class TrainingPanel(QDialog):
         self.setMinimumSize(700, 600)
         self.config = config or {}
         self.training_thread: Optional[TrainingThread] = None
+        self._weight_adjusting = False  # 防止采样权重联动时的递归信号
 
         self._init_ui()
         self._start_status_update()
@@ -710,13 +711,10 @@ class TrainingPanel(QDialog):
         mix_group.setLayout(mix_layout)
         control_layout.addWidget(mix_group)
 
-        # 连接滑块信号
-        self.slider_self.valueChanged.connect(
-            lambda v: self.lbl_self.setText(f"{v}%"))
-        self.slider_trad.valueChanged.connect(
-            lambda v: self.lbl_trad.setText(f"{v}%"))
-        self.slider_human.valueChanged.connect(
-            lambda v: self.lbl_human.setText(f"{v}%"))
+        # 连接滑块信号 — 联动绑定：调整任意一项，其余按比例补偿使总和=100
+        self.slider_self.valueChanged.connect(self._on_weight_self_changed)
+        self.slider_trad.valueChanged.connect(self._on_weight_trad_changed)
+        self.slider_human.valueChanged.connect(self._on_weight_human_changed)
 
         # 控制按钮
         btn_layout = QHBoxLayout()
@@ -935,6 +933,60 @@ class TrainingPanel(QDialog):
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{ts}] {msg}")
+
+    def _on_weight_self_changed(self, v):
+        """Self采样权重变化 → 联动调整Trad和Human，保持总和=100。"""
+        self.lbl_self.setText(f"{v}%")
+        if self._weight_adjusting:
+            return
+        self._balance_weights('self', v)
+
+    def _on_weight_trad_changed(self, v):
+        """Trad采样权重变化 → 联动调整Self和Human。"""
+        self.lbl_trad.setText(f"{v}%")
+        if self._weight_adjusting:
+            return
+        self._balance_weights('trad', v)
+
+    def _on_weight_human_changed(self, v):
+        """Human采样权重变化 → 联动调整Self和Trad。"""
+        self.lbl_human.setText(f"{v}%")
+        if self._weight_adjusting:
+            return
+        self._balance_weights('human', v)
+
+    def _balance_weights(self, changed_source, new_val):
+        """调整另两个采样权重滑条，使三者总和恒为100。"""
+        self._weight_adjusting = True
+        remaining = 100 - new_val
+
+        sources = ['self', 'trad', 'human']
+        sliders = {'self': self.slider_self, 'trad': self.slider_trad, 'human': self.slider_human}
+        labels = {'self': self.lbl_self, 'trad': self.lbl_trad, 'human': self.lbl_human}
+
+        others = [s for s in sources if s != changed_source]
+        old_sum = sum(sliders[s].value() for s in others)
+
+        if old_sum == 0:
+            # 另两项都为0，均匀分配
+            for i, s in enumerate(others):
+                val = remaining // 2 if i == 0 else remaining - remaining // 2
+                val = max(0, min(100, val))
+                sliders[s].setValue(val)
+                labels[s].setText(f"{val}%")
+        else:
+            # 按原有比例重新分配，最后一项用减法确保总和=100
+            prev_values = []
+            for i, s in enumerate(others):
+                if i < len(others) - 1:
+                    val = max(0, min(100, round(remaining * sliders[s].value() / old_sum)))
+                else:
+                    val = max(0, min(100, remaining - sum(prev_values)))
+                prev_values.append(val)
+                sliders[s].setValue(val)
+                labels[s].setText(f"{val}%")
+
+        self._weight_adjusting = False
 
     def closeEvent(self, event):
         """关闭面板时恢复主窗口GUI"""
