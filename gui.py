@@ -1329,9 +1329,16 @@ class MainWindow(QMainWindow):
             f"传统AI{stats['depth']}层 {gpu_tag} → {chr(ord('A')+move[1])}{move[0]+1} "
             f"耗时 {stats['time']:.3f}s")
 
-        # 传统AI走完后，触发NN走子
-        if not game.game_over and self.game_mode == 'trad_vs_nn':
-            self.ai_timer.start(300)
+        # 传统AI走完后
+        if not game.game_over:
+            # 对局未结束：触发NN走子
+            if self.game_mode == 'trad_vs_nn':
+                self.ai_timer.start(300)
+        else:
+            # 对局已结束：演示模式自动重开
+            if self.game_mode in ('trad_vs_nn',):
+                self.status_bar.showMessage("对局结束，2秒后自动开始新局...")
+                self.ai_timer.start(2000)
 
     def _on_ai_move(self, row: int, col: int):
         """AI落子"""
