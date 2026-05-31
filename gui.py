@@ -912,6 +912,9 @@ class MainWindow(QMainWindow):
         # 传统AI（用于纯传统AI模式）
         self.traditional_ai = TraditionalAI(search_depth=4)
 
+        # 并行对弈局数（训练数据收集 / AI vs AI 演示）
+        self.num_parallel_games = 5
+
         # 对弈计时器
         self.ai_timer = QTimer(self)
         self.ai_timer.timeout.connect(self._trigger_ai_move)
@@ -1008,6 +1011,23 @@ class MainWindow(QMainWindow):
         self.lbl_trad_depth_val.setAlignment(Qt.AlignmentFlag.AlignRight)
         trad_depth_layout.addWidget(self.lbl_trad_depth_val)
         ai_setting_layout.addLayout(trad_depth_layout)
+
+        # 并行对弈局数滑动条（训练数据收集 / AI vs AI 演示模式）
+        parallel_layout = QHBoxLayout()
+        parallel_layout.addWidget(QLabel("并行局数:"))
+        self.slider_parallel = QSlider(Qt.Orientation.Horizontal)
+        self.slider_parallel.setRange(1, 10)
+        self.slider_parallel.setValue(5)
+        self.slider_parallel.setSingleStep(1)
+        self.slider_parallel.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider_parallel.setTickInterval(1)
+        self.slider_parallel.valueChanged.connect(self._on_parallel_changed)
+        parallel_layout.addWidget(self.slider_parallel)
+        self.lbl_parallel_val = QLabel("5")
+        self.lbl_parallel_val.setMinimumWidth(35)
+        self.lbl_parallel_val.setAlignment(Qt.AlignmentFlag.AlignRight)
+        parallel_layout.addWidget(self.lbl_parallel_val)
+        ai_setting_layout.addLayout(parallel_layout)
 
         # GPU加速提示
         gpu_status = "GPU (CUDA)" if self.device.type == 'cuda' else "CPU"
@@ -1215,6 +1235,11 @@ class MainWindow(QMainWindow):
         self.traditional_ai.set_depth(value)
         self.lbl_trad_depth_val.setText(str(value))
 
+    def _on_parallel_changed(self, value: int):
+        """并行对弈局数滑动条变化"""
+        self.num_parallel_games = value
+        self.lbl_parallel_val.setText(str(value))
+
     def _on_training_mode_toggled(self, checked: bool):
         """训练模式切换"""
         self.training_mode = checked
@@ -1249,8 +1274,16 @@ class MainWindow(QMainWindow):
             self._request_ai_move()
 
     def _trigger_ai_move(self):
-        """计时器触发AI走子"""
+        """计时器触发AI走子 / 自动新局"""
         self.ai_timer.stop()
+        game = self.board_widget.game
+
+        # 对局已结束 → 自动开始新局（演示模式）
+        if game.game_over:
+            if self.game_mode in ('ai_vs_ai', 'trad_vs_nn'):
+                self._new_game()
+            return
+
         self._start_ai_if_needed()
 
     def _request_ai_move(self):
@@ -1311,23 +1344,34 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("就绪")
         self._update_info()
 
-        # AI vs AI 或 传统AI vs NN：延迟后继续
-        if not self.board_widget.game.game_over:
-            if self.game_mode in ('ai_vs_ai', 'trad_vs_nn'):
-                self.ai_timer.start(500)  # 500ms延迟
+        game = self.board_widget.game
+        demo_modes = ('ai_vs_ai', 'trad_vs_nn')
+
+        if not game.game_over:
+            # 对局未结束：延迟后继续走下一步
+            if self.game_mode in demo_modes:
+                self.ai_timer.start(500)
+        else:
+            # 对局已结束：自动开始新局（演示模式）
+            if self.game_mode in demo_modes:
+                self.status_bar.showMessage("对局结束，2秒后自动开始新局...")
+                self.ai_timer.start(2000)
+            elif self.game_mode in ('human_black', 'human_white'):
+                self.lbl_status.setText("对局结束，点击新局开始")
 
     # ------------------------------------------------------------------
     # 训练数据收集：5局并发 AI vs AI
     # ------------------------------------------------------------------
 
     def _start_training_multi_game(self):
-        """启动5局并发AI vs AI对弈（训练数据收集模式）"""
+        """启动多局并发AI vs AI对弈（训练数据收集模式）"""
         if self.model is None:
             return
 
+        ngames = self.num_parallel_games
         self.ai_thinking = True
-        self.lbl_status.setText("AI训练对弈中(5局并发)...")
-        self.status_bar.showMessage("训练数据收集: 5局并发对弈进行中...")
+        self.lbl_status.setText(f"AI训练对弈中({ngames}局并发)...")
+        self.status_bar.showMessage(f"训练数据收集: {ngames}局并发对弈进行中...")
 
         # 重置棋盘用于参考局渲染
         self._ref_game_board = GomokuGame()
@@ -1336,7 +1380,7 @@ class MainWindow(QMainWindow):
             model=self.model,
             num_simulations=self.num_mcts_simulations,
             device=self.device,
-            num_games=5,
+            num_games=ngames,
             replay_buffer=None  # 在主线程中手动添加到buffer
         )
         self.multi_game_thread.reference_move.connect(self._on_training_ref_move)
@@ -1361,7 +1405,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"训练数据收集: {completed}/{total} 局完成...")
 
     def _on_training_games_done(self, all_data: list):
-        """5局全部完成，数据写入本地文件"""
+        """多局并发全部完成 → 保存数据并自动开始下一轮"""
         self.ai_thinking = False
         self.status_bar.showMessage(f"训练数据收集完成: 共{len(all_data)}条经验")
 
@@ -1377,18 +1421,21 @@ class MainWindow(QMainWindow):
             values = np.array([d[2] for d in all_data], dtype=np.float32)
             np.savez_compressed(save_path, states=states, policies=policies, values=values)
             self.status_bar.showMessage(
-                f"训练数据已保存: {save_path} ({len(all_data)}条)"
+                f"训练数据已保存: {save_path} ({len(all_data)}条) → 2秒后自动开始下一轮..."
             )
         except Exception as e:
             self.status_bar.showMessage(f"保存训练数据失败: {e}")
 
         # 重置参考棋盘
         self._ref_game_board = GomokuGame()
+        self.board_widget.reset_board()
+        self.move_list.clear()
         self._update_info()
-        self.lbl_status.setText("训练数据收集完成，点击新局继续")
+        self.lbl_status.setText(f"训练数据收集: 本轮{len(all_data)}条，2秒后继续...")
 
-        # 继续下一轮收集
-        self.ai_timer.start(2000)
+        # 自动开始下一轮收集（训练模式保持开启）
+        if self.training_mode:
+            self.ai_timer.start(2000)
 
     def _open_training_panel(self):
         """打开训练面板"""
