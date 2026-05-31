@@ -494,7 +494,8 @@ class TrainingThread(QThread):
         """运行训练"""
         try:
             self.trainer = Trainer(self.config)
-            self.trainer.train_loop(games_per_iteration=5)
+            games_per_iter = self.config.get('training', {}).get('games_per_iteration', 5)
+            self.trainer.train_loop(games_per_iteration=games_per_iter)
 
             # 定期更新状态
             while self.trainer.running:
@@ -662,6 +663,21 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(self.slider_trad_init_depth, 3, 1)
         param_layout.addWidget(self.lbl_trad_init_depth, 3, 2)
 
+        # 每轮对弈局数 — 每个训练迭代生成多少局对局数据
+        param_layout.addWidget(QLabel("每轮对弈局数:"), 3, 3)
+        self.slider_parallel = QSlider(Qt.Orientation.Horizontal)
+        self.slider_parallel.setRange(1, 20)
+        self.slider_parallel.setValue(5)
+        self.slider_parallel.setSingleStep(1)
+        self.slider_parallel.setTickInterval(2)
+        self.slider_parallel.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.lbl_parallel = QLabel("5")
+        self.lbl_parallel.setMinimumWidth(30)
+        self.slider_parallel.valueChanged.connect(
+            lambda v: self.lbl_parallel.setText(str(v)))
+        param_layout.addWidget(self.slider_parallel, 3, 4)
+        param_layout.addWidget(self.lbl_parallel, 3, 5)
+
         param_group.setLayout(param_layout)
         control_layout.addWidget(param_group)
 
@@ -805,6 +821,7 @@ class TrainingPanel(QDialog):
                 'log_dir': os.path.join(PROJECT_DIR, 'logs'),
                 'save_interval_minutes': self.slider_save.value(),
                 'auto_eval_games': self.slider_eval_games.value(),
+                'games_per_iteration': self.slider_parallel.value(),
                 'replay_buffer': {
                     'capacity': 2000000,
                     'sampling_weights': {
