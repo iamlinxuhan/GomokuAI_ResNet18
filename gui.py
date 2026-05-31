@@ -647,6 +647,21 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(self.slider_eval_games, 2, 4)
         param_layout.addWidget(self.lbl_eval_games, 2, 5)
 
+        # 传统AI初始深度 — 训练时传统AI对抗的起始搜索深度
+        param_layout.addWidget(QLabel("传统AI初始深度:"), 3, 0)
+        self.slider_trad_init_depth = QSlider(Qt.Orientation.Horizontal)
+        self.slider_trad_init_depth.setRange(1, 8)
+        self.slider_trad_init_depth.setValue(4)
+        self.slider_trad_init_depth.setSingleStep(1)
+        self.slider_trad_init_depth.setTickInterval(1)
+        self.slider_trad_init_depth.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.lbl_trad_init_depth = QLabel("4")
+        self.lbl_trad_init_depth.setMinimumWidth(30)
+        self.slider_trad_init_depth.valueChanged.connect(
+            lambda v: self.lbl_trad_init_depth.setText(str(v)))
+        param_layout.addWidget(self.slider_trad_init_depth, 3, 1)
+        param_layout.addWidget(self.lbl_trad_init_depth, 3, 2)
+
         param_group.setLayout(param_layout)
         control_layout.addWidget(param_group)
 
@@ -799,7 +814,7 @@ class TrainingPanel(QDialog):
                     }
                 },
                 'traditional': {
-                    'initial_depth': 4,
+                    'initial_depth': self.slider_trad_init_depth.value(),
                     'depth_range': [1, 8],
                     'games_per_adjust': 10,
                     'target_win_rate': 0.20,
