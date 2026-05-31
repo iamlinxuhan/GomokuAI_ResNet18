@@ -10,9 +10,41 @@ BOARD_SIZE = 15
 BLACK = 1   # 黑棋先手
 WHITE = -1  # 白棋后手
 EMPTY = 0
+CENTER = BOARD_SIZE // 2  # 中心点坐标 (7, 7)
 
 # 方向向量：水平、垂直、对角线(\)、反对角线(/)
 DIRECTIONS = [(1, 0), (0, 1), (1, 1), (1, -1)]
+
+
+def get_center_weights(move_count: int = 0, strength: float = 1.0) -> np.ndarray:
+    """
+    计算各位置的「中心偏好权重」，距离中心越近权重越高。
+    用于开局阶段引导 AI 向棋盘中心靠拢。
+
+    Args:
+        move_count: 当前步数（步数越多，权重影响越小）
+        strength: 基础权重强度
+
+    Returns:
+        (225,) numpy array, 每个合法位置的权重(0~1)，靠近中心=1.0
+    """
+    center = BOARD_SIZE // 2
+    max_dist = 2 * center  # 曼哈顿最大距离 (14)
+    weights = np.zeros(BOARD_SIZE * BOARD_SIZE, dtype=np.float32)
+
+    # 步数衰减：前10步强度最大，之后逐步减弱
+    decay = max(0.0, 1.0 - move_count / 25.0) * strength
+
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            dist = abs(r - center) + abs(c - center)
+            # 距离惩罚：dist=0 → weight=1.0, dist=max → weight≈0.0
+            w = 1.0 - (dist / max(max_dist, 1))
+            idx = r * BOARD_SIZE + c
+            # 混合原始权重和惩罚
+            weights[idx] = 1.0 - decay * (1.0 - w)
+
+    return np.clip(weights, 0.01, 1.0)
 
 
 class GomokuGame:

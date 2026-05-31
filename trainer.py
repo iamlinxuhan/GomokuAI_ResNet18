@@ -28,6 +28,9 @@ from network import GomokuNet
 from mcts import MCTS, get_best_move_from_probs
 from traditional_ai import TraditionalAI
 
+# 项目根目录
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 logger = logging.getLogger(__name__)
 
 
@@ -223,10 +226,18 @@ class SelfPlayWorker:
     """自我对弈工作进程"""
 
     def __init__(self, model: GomokuNet, num_simulations: int = 400,
-                 device: torch.device = None):
+                 device: torch.device = None,
+                 temperature: float = 1.0, temperature_cutoff: int = 15,
+                 dirichlet_alpha: float = 0.03, dirichlet_epsilon: float = 0.25,
+                 c_puct: float = 2.5):
         self.model = model
         self.num_simulations = num_simulations
         self.device = device or torch.device('cpu')
+        self.temperature = temperature
+        self.temperature_cutoff = temperature_cutoff
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
+        self.c_puct = c_puct
 
     def play_game(self) -> List[Tuple[np.ndarray, np.ndarray, float, str]]:
         """
@@ -238,21 +249,23 @@ class SelfPlayWorker:
         mcts = MCTS(
             model=self.model,
             num_simulations=self.num_simulations,
-            device=self.device
+            device=self.device,
+            c_puct=self.c_puct
         )
 
         game_data = []
         move_count = 0
 
         while not game.game_over:
-            temperature = 1.0 if move_count < 15 else 0.1  # 前15步使用温度
+            # 智能温度：前N步使用探索温度，之后用极小温度
+            temperature = self.temperature if move_count < self.temperature_cutoff else 0.1
 
             action_probs, _ = mcts.search(
                 game,
                 temperature=temperature,
                 add_dirichlet_noise=True,
-                dirichlet_alpha=0.03,
-                dirichlet_epsilon=0.25
+                dirichlet_alpha=self.dirichlet_alpha,
+                dirichlet_epsilon=self.dirichlet_epsilon
             )
 
             # 保存状态和MCTS策略目标
@@ -481,6 +494,192 @@ class ELOSystem:
 
 
 # ============================================================================
+# 智能参数自动调控器
+# ============================================================================
+
+@dataclass
+class AutoParams:
+    """自动调控的训练参数快照"""
+    temperature: float = 1.5
+    temperature_cutoff: int = 15
+    mcts_simulations: int = 200
+    dirichlet_alpha: float = 0.03
+    dirichlet_epsilon: float = 0.25
+    c_puct: float = 2.5
+    games_per_iteration: int = 5
+    noise_scale: float = 1.0      # 数据增强噪声缩放
+
+
+class AutoParameterController:
+    """
+    智能参数自动调控器
+
+    根据训练进度自动调整：
+    - MCTS 搜索温度：随训练进度逐步降低，控制探索/利用平衡
+    - MCTS 模拟次数：随模型能力提升逐步增加
+    - Dirichlet 噪声强度：随训练进度衰减
+    - PUCT 探索常数：根据 loss 收敛情况微调
+    - 每轮对弈局数：根据经验池健康度动态调整
+    """
+
+    def __init__(self,
+                 initial_mcts: int = 200,
+                 mcts_range: Tuple[int, int] = (100, 800),
+                 initial_temperature: float = 1.5,
+                 temperature_min: float = 0.1):
+        self.mcts_simulations = initial_mcts
+        self.mcts_range = mcts_range
+        self.temperature = initial_temperature
+        self.temperature_min = temperature_min
+        self.dirichlet_epsilon = 0.25
+        self.dirichlet_epsilon_min = 0.05
+        self.dirichlet_alpha = 0.03
+        self.c_puct = 2.5
+        self.games_per_iteration = 5
+        self.temperature_cutoff = 15
+
+        # 统计追踪
+        self.recent_losses: deque = deque(maxlen=200)
+        self.recent_win_rates: deque = deque(maxlen=20)
+        self.loss_stable_count = 0
+        self.last_mcts_adjust_step = 0
+        self.mcts_adjust_cooldown = 2000
+
+        # 阶段追踪
+        self.phase = 'early'  # early / mid / late
+        self._phase_thresholds = (0.15, 0.60)  # early→mid→late
+
+        logger.info(f"AutoParameterController 初始化: "
+                    f"mcts={initial_mcts}, temp={initial_temperature}, "
+                    f"puct={self.c_puct}")
+
+    def update(self, global_step: int, total_steps: int,
+               loss_info: Optional[Dict] = None,
+               win_rate: Optional[float] = None,
+               buffer_size: int = 0) -> AutoParams:
+        """
+        每次训练迭代后调用，自动调整参数。
+
+        Returns:
+            AutoParams: 更新后的参数快照
+        """
+        progress = min(1.0, global_step / max(1, total_steps))
+
+        # ── 阶段判定 ──
+        if progress < self._phase_thresholds[0]:
+            self.phase = 'early'
+        elif progress < self._phase_thresholds[1]:
+            self.phase = 'mid'
+        else:
+            self.phase = 'late'
+
+        # ── 1. MCTS搜索温度：随进度衰减 ──
+        # early: 1.5→0.8, mid: 0.8→0.2, late: 0.2→0.1
+        if self.phase == 'early':
+            self.temperature = 1.5 - progress / self._phase_thresholds[0] * 0.7
+        elif self.phase == 'mid':
+            p = (progress - self._phase_thresholds[0]) / (self._phase_thresholds[1] - self._phase_thresholds[0])
+            self.temperature = 0.8 - p * 0.6
+        else:
+            self.temperature = max(self.temperature_min, 0.2 * (1.0 - progress) + self.temperature_min)
+
+        # ── 2. Dirichlet 噪声：随进度衰减 ──
+        self.dirichlet_epsilon = max(
+            self.dirichlet_epsilon_min,
+            0.25 * (1.0 - progress * 0.85)
+        )
+
+        # ── 3. MCTS模拟次数：根据胜率+loss趋势动态调整 ──
+        if win_rate is not None:
+            self.recent_win_rates.append(win_rate)
+
+        if loss_info and 'total_loss' in loss_info:
+            self.recent_losses.append({'total_loss': loss_info['total_loss'], 'step': global_step})
+
+        # 每 cooldown 步检查一次 MCTS 调整
+        if global_step - self.last_mcts_adjust_step >= self.mcts_adjust_cooldown:
+            self._adjust_mcts(global_step)
+            self.last_mcts_adjust_step = global_step
+
+        # ── 4. PUCT探索常数：根据loss收敛状态微调 ──
+        if len(self.recent_losses) >= 100:
+            recent_100 = list(self.recent_losses)[-100:]
+            losses = [r['total_loss'] if isinstance(r, dict) else r for r in recent_100]
+            avg_loss = sum(losses) / len(losses)
+            loss_std = (sum((l - avg_loss) ** 2 for l in losses) / len(losses)) ** 0.5
+
+            if loss_std < 0.05 and avg_loss < 1.0:
+                # Loss已稳定→减少探索，专注优化
+                self.c_puct = max(1.2, self.c_puct - 0.05)
+            elif loss_std > 0.3:
+                # Loss波动大→增加探索
+                self.c_puct = min(4.0, self.c_puct + 0.1)
+
+        # ── 5. 每轮对弈局数：根据经验池健康度 ──
+        if buffer_size < 10000:
+            self.games_per_iteration = 10  # 经验池小时多收集
+        elif buffer_size > 100000:
+            self.games_per_iteration = 3   # 经验池充足时少收集
+        else:
+            self.games_per_iteration = 5
+
+        # ── 6. 温度截止步数：中期开始逐步增大探索步数 ──
+        if self.phase == 'early':
+            self.temperature_cutoff = 12
+        elif self.phase == 'mid':
+            self.temperature_cutoff = 18
+        else:
+            self.temperature_cutoff = 10  # 后期缩小，更确定性
+
+        return self.get_params()
+
+    def _adjust_mcts(self, step: int):
+        """根据近期胜率趋势调整MCTS模拟次数"""
+        if len(self.recent_win_rates) < 10:
+            return
+
+        avg_wr = sum(self.recent_win_rates) / len(self.recent_win_rates)
+
+        if self.phase == 'early':
+            # 早期：快速试探，胜率高则加速增加
+            if avg_wr > 0.45:
+                self.mcts_simulations = min(self.mcts_range[1], self.mcts_simulations + 50)
+        elif self.phase == 'mid':
+            # 中期：稳健调整
+            if avg_wr > 0.55:
+                self.mcts_simulations = min(self.mcts_range[1], self.mcts_simulations + 30)
+            elif avg_wr < 0.30:
+                self.mcts_simulations = max(self.mcts_range[0], self.mcts_simulations - 20)
+        else:
+            # 后期：大搜索量
+            self.mcts_simulations = min(self.mcts_range[1], max(self.mcts_simulations, int(self.mcts_range[1] * 0.85)))
+
+    def get_params(self) -> AutoParams:
+        """获取当前参数快照"""
+        return AutoParams(
+            temperature=self.temperature,
+            temperature_cutoff=self.temperature_cutoff,
+            mcts_simulations=self.mcts_simulations,
+            dirichlet_alpha=self.dirichlet_alpha,
+            dirichlet_epsilon=self.dirichlet_epsilon,
+            c_puct=self.c_puct,
+            games_per_iteration=self.games_per_iteration,
+        )
+
+    def get_summary(self) -> Dict[str, Any]:
+        """获取控制器状态摘要"""
+        return {
+            'phase': self.phase,
+            'mcts_simulations': self.mcts_simulations,
+            'temperature': round(self.temperature, 3),
+            'dirichlet_epsilon': round(self.dirichlet_epsilon, 3),
+            'c_puct': round(self.c_puct, 2),
+            'games_per_iteration': self.games_per_iteration,
+            'temperature_cutoff': self.temperature_cutoff,
+        }
+
+
+# ============================================================================
 # 训练器
 # ============================================================================
 
@@ -549,6 +748,14 @@ class Trainer:
         # ELO系统
         self.elo_system = ELOSystem()
 
+        # 智能参数自动调控器
+        self.auto_params = AutoParameterController(
+            initial_mcts=min(200, self.num_mcts_simulations),
+            mcts_range=(100, 800),
+            initial_temperature=1.5,
+            temperature_min=0.1,
+        )
+
         # 训练状态
         self.global_step = 0
         self.total_games_self = 0
@@ -561,56 +768,86 @@ class Trainer:
         self.loss_history: List[Dict] = []
         self.win_rate_history: List[Dict] = []
 
-        # 模型目录
-        self.model_dir = train_cfg.get('model_dir', './models')
+        # 模型目录（优先绝对路径，否则基于项目根目录）
+        model_dir = train_cfg.get('model_dir', './models')
+        if not os.path.isabs(model_dir):
+            model_dir = os.path.join(PROJECT_DIR, model_dir.lstrip('./\\'))
+        self.model_dir = model_dir
         os.makedirs(self.model_dir, exist_ok=True)
 
         # 加载已有模型
         self._load_latest_model()
 
     def _load_latest_model(self):
-        """加载最新模型检查点"""
-        checkpoint_path = os.path.join(self.model_dir, 'latest_checkpoint.pt')
-        if os.path.exists(checkpoint_path):
+        """加载最新模型（覆盖策略：只有一个model.pt）"""
+        model_path = os.path.join(self.model_dir, 'model.pt')
+        if os.path.exists(model_path):
             try:
-                model, info = GomokuNet.load_checkpoint(checkpoint_path, self.device)
+                model, info = GomokuNet.load_checkpoint(model_path, self.device)
                 self.model = model
                 self.global_step = info.get('step', 0)
-                logger.info(f"Loaded checkpoint from step {self.global_step}")
-
-                # 加载最佳模型
-                best_path = os.path.join(self.model_dir, 'best_model.pt')
-                if os.path.exists(best_path):
-                    self.best_model, _ = GomokuNet.load_checkpoint(best_path, self.device)
-                    logger.info("Loaded best model")
+                logger.info(f"Loaded model from step {self.global_step}, elo={info.get('elo', '-')}")
             except Exception as e:
-                logger.warning(f"Failed to load checkpoint: {e}")
+                logger.warning(f"Failed to load model: {e}")
 
-    def _save_checkpoint(self, is_best: bool = False):
-        """保存检查点"""
-        path = os.path.join(self.model_dir, 'latest_checkpoint.pt')
+        # 加载训练状态（优化器、全局步数等）
+        state_path = os.path.join(self.model_dir, 'training_state.pt')
+        if os.path.exists(state_path):
+            try:
+                state = torch.load(state_path, map_location=self.device)
+                self.global_step = state.get('step', self.global_step)
+                if state.get('optimizer_state_dict'):
+                    self.optimizer.load_state_dict(state['optimizer_state_dict'])
+                # 恢复auto_params状态
+                if state.get('auto_params'):
+                    ap = state['auto_params']
+                    self.auto_params.mcts_simulations = ap.get('mcts_simulations', 200)
+                    self.auto_params.temperature = ap.get('temperature', 1.5)
+                    self.auto_params.dirichlet_epsilon = ap.get('dirichlet_epsilon', 0.25)
+                    self.auto_params.c_puct = ap.get('c_puct', 2.5)
+                    self.auto_params.games_per_iteration = ap.get('games_per_iteration', 5)
+                logger.info(f"Loaded training state from step {self.global_step}")
+            except Exception as e:
+                logger.warning(f"Failed to load training state: {e}")
+
+    def _save_checkpoint(self):
+        """保存模型和训练状态（覆盖策略：始终覆盖旧文件）"""
+        # 保存模型（覆盖旧模型）
+        model_path = os.path.join(self.model_dir, 'model.pt')
         self.model.save_checkpoint(
-            path,
-            optimizer=self.optimizer,
+            model_path,
             step=self.global_step,
             extra={'elo': self.elo_system.get_elo('current')}
         )
-        if is_best:
-            best_path = os.path.join(self.model_dir, 'best_model.pt')
-            self.model.save_checkpoint(
-                best_path,
-                step=self.global_step,
-                extra={'elo': self.elo_system.get_elo('current')}
-            )
-            # 更新最佳模型
-            self.best_model.load_state_dict(self.model.state_dict())
+
+        # 保存训练状态（覆盖，用于断点续训）
+        state_path = os.path.join(self.model_dir, 'training_state.pt')
+        torch.save({
+            'step': self.global_step,
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'auto_params': {
+                'mcts_simulations': self.auto_params.mcts_simulations,
+                'temperature': self.auto_params.temperature,
+                'dirichlet_epsilon': self.auto_params.dirichlet_epsilon,
+                'c_puct': self.auto_params.c_puct,
+                'games_per_iteration': self.auto_params.games_per_iteration,
+            },
+            'elo_current': self.elo_system.get_elo('current'),
+            'elo_best': self.elo_system.get_elo('best'),
+        }, state_path)
 
     def _generate_self_play_data(self, num_games: int = 1):
-        """生成自我对弈数据"""
+        """生成自我对弈数据（使用智能调控参数）"""
+        ap = self.auto_params.get_params()
         worker = SelfPlayWorker(
             model=self.model,
-            num_simulations=self.num_mcts_simulations,
-            device=self.device
+            num_simulations=ap.mcts_simulations,
+            device=self.device,
+            temperature=ap.temperature,
+            temperature_cutoff=ap.temperature_cutoff,
+            dirichlet_alpha=ap.dirichlet_alpha,
+            dirichlet_epsilon=ap.dirichlet_epsilon,
+            c_puct=ap.c_puct,
         )
         for _ in range(num_games):
             if not self.running or self.paused:
@@ -810,12 +1047,13 @@ class Trainer:
 
         return result
 
-    def train_loop(self, total_steps: int = None, games_per_iteration: int = 10):
+    def train_loop(self, total_steps: int = None, games_per_iteration: int = None):
         """
-        主训练循环
+        主训练循环（智能自动调参）
+
         Args:
             total_steps: 总训练步数
-            games_per_iteration: 每轮生成的对局数
+            games_per_iteration: 每轮生成的对局数（若为None，由智能控制器自动决定）
         """
         if total_steps is None:
             total_steps = self.config.get('training', {}).get('total_steps', 500000)
@@ -825,7 +1063,8 @@ class Trainer:
         start_time = time.time()
         last_save_time = start_time
         last_eval_time = start_time
-        # 自动评估间隔（秒）：根据auto_eval_games动态调整，默认每10分钟检查一次
+        last_params_log_time = start_time
+        # 自动评估间隔（秒）
         eval_interval_seconds = 600
 
         logger.info(f"Starting training loop. Target: {total_steps} steps. "
@@ -833,6 +1072,7 @@ class Trainer:
         logger.info(f"Device: {self.device}, Batch size: {self.batch_size}")
         logger.info(f"Auto-save: every {self.save_interval_minutes}min | "
                     f"Auto-eval: {self.auto_eval_games} games vs Traditional AI")
+        logger.info(f"Smart Auto-Params: ENABLED (temperature/MCTS/noise/PUCT auto-adjusted)")
 
         try:
             while self.running and self.global_step < total_steps:
@@ -840,13 +1080,18 @@ class Trainer:
                     time.sleep(1)
                     continue
 
+                # 获取智能调控参数
+                ap = self.auto_params.get_params()
+                auto_games = games_per_iteration if games_per_iteration is not None else ap.games_per_iteration
+
                 # 生成训练数据
                 if 'self' in self.modes:
-                    self._generate_self_play_data(games_per_iteration)
+                    self._generate_self_play_data(auto_games)
                 if 'trad' in self.modes:
-                    self._generate_traditional_data(games_per_iteration)
+                    self._generate_traditional_data(auto_games)
 
                 # 训练步骤
+                loss_info = {}
                 if len(self.replay_buffer) >= self.batch_size:
                     for _ in range(10):  # 每轮训练10步
                         if not self.running:
@@ -855,16 +1100,33 @@ class Trainer:
                         if loss_info:
                             self.loss_history.append({**loss_info, 'step': self.global_step})
 
-                    # 打印进度
+                    # ── 智能参数自动更新 ──
+                    self.auto_params.update(
+                        global_step=self.global_step,
+                        total_steps=total_steps,
+                        loss_info=loss_info,
+                        win_rate=self.adjuster.get_win_rate(),
+                        buffer_size=len(self.replay_buffer),
+                    )
+
+                    # 打印进度（含自动调控参数）
                     if self.global_step % 100 == 0:
                         buf_stats = self.replay_buffer.get_stats()
+                        ap_summary = self.auto_params.get_summary()
                         logger.info(
                             f"Step {self.global_step}/{total_steps} | "
                             f"Loss: {loss_info.get('total_loss', 0):.4f} | "
                             f"Buffer: {buf_stats['total']} | "
-                            f"LR: {loss_info.get('learning_rate', 0):.6f} | "
-                            f"Trad depth: {self.adjuster.current_depth} | "
-                            f"Trad win rate: {self.adjuster.get_win_rate():.2%}"
+                            f"LR: {loss_info.get('learning_rate', 0):.6f}"
+                        )
+                        logger.info(
+                            f"  Auto: phase={ap_summary['phase']} | "
+                            f"MCTS={ap_summary['mcts_simulations']} | "
+                            f"temp={ap_summary['temperature']:.3f} | "
+                            f"noise_eps={ap_summary['dirichlet_epsilon']:.3f} | "
+                            f"PUCT={ap_summary['c_puct']:.2f} | "
+                            f"games/iter={ap_summary['games_per_iteration']} | "
+                            f"trad_depth={self.adjuster.current_depth}"
                         )
 
                 # 定期评估和保存（每5000步）
@@ -878,21 +1140,19 @@ class Trainer:
                         **eval_result,
                     })
 
-                    # 如果胜率 > 55%，保存为最佳模型
+                    # 覆盖保存模型
+                    self._save_checkpoint()
                     if eval_result['win_rate'] > 0.55:
-                        self._save_checkpoint(is_best=True)
                         self.elo_system.update('current', 'best', 50)
-                    else:
-                        self._save_checkpoint(is_best=False)
 
-                # 定时自动保存（每N分钟）
+                # 定时自动保存（覆盖旧模型）
                 elapsed = time.time() - last_save_time
                 if elapsed > self.save_interval_minutes * 60:
-                    logger.info(f"Auto-save: 定时保存检查点 (间隔: {self.save_interval_minutes}分钟)")
-                    self._save_checkpoint(is_best=False)
+                    logger.info(f"Auto-save: 覆盖保存模型 (间隔: {self.save_interval_minutes}分钟)")
+                    self._save_checkpoint()
                     last_save_time = time.time()
 
-                # 定时自动评估 NN vs 传统AI（每10分钟检查一次）
+                # 定时自动评估 NN vs 传统AI
                 eval_elapsed = time.time() - last_eval_time
                 if eval_elapsed > eval_interval_seconds and len(self.replay_buffer) >= self.batch_size * 2:
                     logger.info(f"Auto-eval: 开始{self.auto_eval_games}局 NN vs 传统AI 评估 (GPU加速)...")
@@ -906,10 +1166,17 @@ class Trainer:
                     })
                     last_eval_time = time.time()
 
+                # 定期输出参数调控日志（每5分钟）
+                params_elapsed = time.time() - last_params_log_time
+                if params_elapsed > 300:
+                    ap_summary = self.auto_params.get_summary()
+                    logger.info(f"[AutoParams] {ap_summary}")
+                    last_params_log_time = time.time()
+
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
         finally:
-            self._save_checkpoint(is_best=False)
+            self._save_checkpoint()
             logger.info(f"Training stopped at step {self.global_step}")
 
     def stop(self):
@@ -941,6 +1208,7 @@ class Trainer:
             'trad_win_rate': self.adjuster.get_win_rate(),
             'elo_current': self.elo_system.get_elo('current'),
             'elo_best': self.elo_system.get_elo('best'),
+            'auto_params': self.auto_params.get_summary(),
             'loss_history': self.loss_history[-100:] if self.loss_history else [],
             'win_rate_history': self.win_rate_history[-20:] if self.win_rate_history else [],
         }

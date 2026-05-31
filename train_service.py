@@ -17,12 +17,17 @@ from logging.handlers import RotatingFileHandler
 
 from trainer import Trainer
 
+# 项目根目录
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ============================================================================
 # 日志配置
 # ============================================================================
 
-def setup_logging(log_dir: str = './logs', log_level: str = 'INFO'):
+def setup_logging(log_dir: str = None, log_level: str = 'INFO'):
     """配置滚动日志"""
+    if log_dir is None or not os.path.isabs(log_dir):
+        log_dir = os.path.join(PROJECT_DIR, (log_dir or './logs').lstrip('./\\'))
     os.makedirs(log_dir, exist_ok=True)
 
     log_file = os.path.join(log_dir, 'training.log')
@@ -97,8 +102,8 @@ def _default_config() -> dict:
             'num_mcts_simulations': 400,
             'total_steps': 500000,
             'use_cuda': True,
-            'model_dir': './models',
-            'log_dir': './logs',
+            'model_dir': os.path.join(PROJECT_DIR, 'models'),
+            'log_dir': os.path.join(PROJECT_DIR, 'logs'),
             'save_interval_minutes': 5,
             'auto_eval_games': 100,
             'self_play': {
@@ -157,7 +162,7 @@ class GracefulKiller:
         if self.trainer:
             logger.info("保存检查点并停止训练...")
             self.trainer.stop()
-            self.trainer._save_checkpoint(is_best=False)
+            self.trainer._save_checkpoint()
             logger.info("训练已安全停止")
 
 

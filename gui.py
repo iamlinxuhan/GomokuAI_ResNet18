@@ -10,6 +10,7 @@ import time
 import json
 import threading
 import queue
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Tuple, List
 
 import numpy as np
@@ -34,11 +35,14 @@ from PyQt6.QtCore import (
     QEvent, QObject,
 )
 
-from game import GomokuGame, BOARD_SIZE, BLACK, WHITE, EMPTY
+from game import GomokuGame, BOARD_SIZE, BLACK, WHITE, EMPTY, get_center_weights
 from network import GomokuNet
 from mcts import MCTS, get_best_move_from_probs
 from traditional_ai import TraditionalAI
 from trainer import Trainer, ReplayBuffer
+
+# 项目根目录（所有路径以此为基础）
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 # ============================================================================
@@ -380,6 +384,96 @@ class AIThread(QThread):
 
 
 # ============================================================================
+# 多局并发AI对弈线程（训练数据收集模式专用）
+# ============================================================================
+
+class MultiGameAIThread(QThread):
+    """
+    5局AI vs AI并发对弈，不阻塞UI。
+    其中第0局作为参考渲染到棋盘，其余4局后台静默运行。
+    """
+    reference_move = pyqtSignal(int, int)        # (row, col) 参考局的每一步
+    reference_reset = pyqtSignal()                # 参考局重置
+    all_games_completed = pyqtSignal(list)        # 全部5局的数据 [(state, policy, value, source), ...]
+    game_progress = pyqtSignal(int, int)          # (completed, total)
+    thinking_status = pyqtSignal(str)             # 状态消息
+
+    def __init__(self, model: GomokuNet, num_simulations: int = 400,
+                 device: torch.device = None, num_games: int = 5,
+                 replay_buffer: 'ReplayBuffer' = None):
+        super().__init__()
+        self.model = model
+        self.num_simulations = num_simulations
+        self.device = device or torch.device('cpu')
+        self.num_games = num_games
+        self.replay_buffer = replay_buffer
+
+    def run(self):
+        all_data = []
+        completed_count = [0]  # 用 list 实现可变闭包捕获
+        lock = threading.Lock()
+        move_queue = queue.Queue()
+
+        def play_one_game(game_id: int) -> list:
+            """在子线程中运行一局AI vs AI"""
+            game = GomokuGame()
+            mcts = MCTS(model=self.model, num_simulations=self.num_simulations,
+                        device=self.device)
+            game_data = []
+
+            while not game.game_over:
+                action_probs, _ = mcts.search(game, temperature=0.1)
+                state = game.get_state_planes()
+                game_data.append((state, action_probs, None, 'self'))
+
+                move = get_best_move_from_probs(action_probs, game, deterministic=True)
+                if move == (-1, -1):
+                    break
+                game.make_move(move[0], move[1])
+
+                # 参考局(0号)每一步都发送到队列用于UI渲染
+                if game_id == 0:
+                    move_queue.put((move[0], move[1]))
+
+            # 价值回填
+            result = game.winner if game.winner else 0
+            for i in range(len(game_data)):
+                state, policy, _, source = game_data[i]
+                if result == 0:
+                    v = 0.0
+                elif result == BLACK:
+                    v = 1.0 if i % 2 == 0 else -1.0
+                else:
+                    v = -1.0 if i % 2 == 0 else 1.0
+                game_data[i] = (state, policy, v, source)
+
+            with lock:
+                all_data.extend(game_data)
+                completed_count[0] += 1
+                self.game_progress.emit(completed_count[0], self.num_games)
+
+            return game_data
+
+        self.thinking_status.emit(f"开始{self.num_games}局并发对弈 (参考局渲染中)...")
+
+        with ThreadPoolExecutor(max_workers=self.num_games) as executor:
+            futures = [executor.submit(play_one_game, i) for i in range(self.num_games)]
+
+            # 主循环：在等待所有对弈完成的同时，处理参考局的UI更新
+            while completed_count[0] < self.num_games:
+                try:
+                    row, col = move_queue.get(timeout=0.08)
+                    self.reference_move.emit(row, col)
+                except queue.Empty:
+                    pass
+
+        self.thinking_status.emit(
+            f"{self.num_games}局对弈完成，共收集{len(all_data)}条训练数据"
+        )
+        self.all_games_completed.emit(all_data)
+
+
+# ============================================================================
 # 训练线程
 # ============================================================================
 
@@ -675,8 +769,8 @@ class TrainingPanel(QDialog):
                 'num_mcts_simulations': self.slider_mcts.value(),
                 'total_steps': self.slider_steps.value(),
                 'use_cuda': torch.cuda.is_available(),
-                'model_dir': './models',
-                'log_dir': './logs',
+                'model_dir': os.path.join(PROJECT_DIR, 'models'),
+                'log_dir': os.path.join(PROJECT_DIR, 'logs'),
                 'save_interval_minutes': self.slider_save.value(),
                 'auto_eval_games': self.slider_eval_games.value(),
                 'replay_buffer': {
@@ -742,8 +836,8 @@ class TrainingPanel(QDialog):
     def _save_checkpoint(self):
         """保存检查点"""
         if self.training_thread and self.training_thread.trainer:
-            self.training_thread.trainer._save_checkpoint(is_best=False)
-            self._append_log("检查点已保存")
+            self.training_thread.trainer._save_checkpoint()
+            self._append_log("模型已覆盖保存")
 
     def _update_status(self, status: dict):
         """更新训练状态显示"""
@@ -806,6 +900,7 @@ class MainWindow(QMainWindow):
         self.game_mode = 'human_black'  # 'human_black', 'human_white', 'ai_vs_ai', 'trad_vs_nn'
         self.training_mode = False  # 人机对弈训练模式
         self.traditional_is_black = True  # 传统AI vs NN 模式中，传统AI执黑先手
+        self._ref_game_board = GomokuGame()  # 训练模式下参考局的棋盘状态
 
         # AI引擎
         self.model: Optional[GomokuNet] = None
@@ -982,8 +1077,8 @@ class MainWindow(QMainWindow):
         self.setPalette(dark_palette)
 
     def _load_model(self):
-        """加载模型"""
-        model_path = os.path.join('models', 'best_model.pt')
+        """加载模型（覆盖策略：model.pt）"""
+        model_path = os.path.join(PROJECT_DIR, 'models', 'model.pt')
         if os.path.exists(model_path):
             try:
                 self.model, info = GomokuNet.load_checkpoint(model_path, self.device)
@@ -1000,8 +1095,9 @@ class MainWindow(QMainWindow):
 
     def _load_model_dialog(self):
         """加载模型对话框"""
+        default_dir = os.path.join(PROJECT_DIR, 'models')
         path, _ = QFileDialog.getOpenFileName(
-            self, "加载模型", "./models", "PyTorch模型 (*.pt)"
+            self, "加载模型", default_dir, "PyTorch模型 (*.pt)"
         )
         if path:
             try:
@@ -1133,6 +1229,12 @@ class MainWindow(QMainWindow):
         if game.game_over:
             return
 
+        # 训练数据收集模式 + AI vs AI：使用多局并发对弈
+        if self.training_mode and self.game_mode == 'ai_vs_ai':
+            if not self.ai_thinking:
+                self._start_training_multi_game()
+            return
+
         need_ai = False
         if self.game_mode == 'human_black' and game.current_player == WHITE:
             need_ai = True
@@ -1152,7 +1254,7 @@ class MainWindow(QMainWindow):
         self._start_ai_if_needed()
 
     def _request_ai_move(self):
-        """请求AI走子"""
+        """请求AI走子（单局模式，非训练数据收集）"""
         game = self.board_widget.game
         if game.game_over:
             return
@@ -1214,6 +1316,80 @@ class MainWindow(QMainWindow):
             if self.game_mode in ('ai_vs_ai', 'trad_vs_nn'):
                 self.ai_timer.start(500)  # 500ms延迟
 
+    # ------------------------------------------------------------------
+    # 训练数据收集：5局并发 AI vs AI
+    # ------------------------------------------------------------------
+
+    def _start_training_multi_game(self):
+        """启动5局并发AI vs AI对弈（训练数据收集模式）"""
+        if self.model is None:
+            return
+
+        self.ai_thinking = True
+        self.lbl_status.setText("AI训练对弈中(5局并发)...")
+        self.status_bar.showMessage("训练数据收集: 5局并发对弈进行中...")
+
+        # 重置棋盘用于参考局渲染
+        self._ref_game_board = GomokuGame()
+
+        self.multi_game_thread = MultiGameAIThread(
+            model=self.model,
+            num_simulations=self.num_mcts_simulations,
+            device=self.device,
+            num_games=5,
+            replay_buffer=None  # 在主线程中手动添加到buffer
+        )
+        self.multi_game_thread.reference_move.connect(self._on_training_ref_move)
+        self.multi_game_thread.all_games_completed.connect(self._on_training_games_done)
+        self.multi_game_thread.game_progress.connect(self._on_training_game_progress)
+        self.multi_game_thread.thinking_status.connect(self.status_bar.showMessage)
+        self.multi_game_thread.start()
+
+    def _on_training_ref_move(self, row: int, col: int):
+        """参考局落子 → 更新UI棋盘渲染"""
+        # 同步参考局的棋盘状态
+        self._ref_game_board.make_move(row, col)
+
+        # 刷新 BoardWidget 显示
+        self.board_widget.game = self._ref_game_board.clone()
+        self.board_widget.update()
+        self._update_move_list()
+        self._update_info()
+
+    def _on_training_game_progress(self, completed: int, total: int):
+        """更新对弈进度"""
+        self.status_bar.showMessage(f"训练数据收集: {completed}/{total} 局完成...")
+
+    def _on_training_games_done(self, all_data: list):
+        """5局全部完成，数据写入本地文件"""
+        self.ai_thinking = False
+        self.status_bar.showMessage(f"训练数据收集完成: 共{len(all_data)}条经验")
+
+        # 保存训练数据到本地
+        save_dir = os.path.join(PROJECT_DIR, 'training_data')
+        os.makedirs(save_dir, exist_ok=True)
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        save_path = os.path.join(save_dir, f'training_data_{timestamp}.npz')
+
+        try:
+            states = np.array([d[0] for d in all_data], dtype=np.float32)
+            policies = np.array([d[1] for d in all_data], dtype=np.float32)
+            values = np.array([d[2] for d in all_data], dtype=np.float32)
+            np.savez_compressed(save_path, states=states, policies=policies, values=values)
+            self.status_bar.showMessage(
+                f"训练数据已保存: {save_path} ({len(all_data)}条)"
+            )
+        except Exception as e:
+            self.status_bar.showMessage(f"保存训练数据失败: {e}")
+
+        # 重置参考棋盘
+        self._ref_game_board = GomokuGame()
+        self._update_info()
+        self.lbl_status.setText("训练数据收集完成，点击新局继续")
+
+        # 继续下一轮收集
+        self.ai_timer.start(2000)
+
     def _open_training_panel(self):
         """打开训练面板"""
         panel = TrainingPanel(self)
@@ -1245,7 +1421,8 @@ def main():
         # 命令行训练模式
         from trainer import Trainer
         import json
-        with open(args.config, 'r', encoding='utf-8') as f:
+        config_path = args.config if os.path.isabs(args.config) else os.path.join(PROJECT_DIR, args.config)
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         trainer = Trainer(config)
         trainer.train_loop()

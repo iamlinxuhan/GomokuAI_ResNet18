@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from typing import Tuple, List, Optional, Dict
-from game import GomokuGame, BOARD_SIZE, EMPTY
+from game import GomokuGame, BOARD_SIZE, EMPTY, get_center_weights
 
 
 class MCTSNode:
@@ -98,10 +98,15 @@ class MCTS:
         legal_moves = game.get_legal_moves()
         legal_indices = [r * BOARD_SIZE + c for r, c in legal_moves]
 
+        # 计算中心位置权重（开局时更强）
+        move_count = len(game.move_history)
+        center_weights = get_center_weights(move_count, strength=0.8)
+
         for (r, c), idx in zip(legal_moves, legal_indices):
+            prior = policy_probs[idx] * center_weights[idx]
             self.root.children[(r, c)] = MCTSNode(
                 parent=self.root,
-                prior=policy_probs[idx],
+                prior=prior,
                 move=(r, c)
             )
 
@@ -197,11 +202,14 @@ class MCTS:
 
         # 扩展节点
         legal_moves = game.get_legal_moves()
+        move_count = len(game.move_history)
+        center_weights = get_center_weights(move_count, strength=0.8)
         for r, c in legal_moves:
             idx = r * BOARD_SIZE + c
+            prior = policy_probs[idx] * center_weights[idx]
             node.children[(r, c)] = MCTSNode(
                 parent=node,
-                prior=policy_probs[idx],
+                prior=prior,
                 move=(r, c)
             )
 

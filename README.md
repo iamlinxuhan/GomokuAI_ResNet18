@@ -16,7 +16,9 @@
   - **自我对弈（Self-Play）**：AlphaZero 风格强化学习
   - **传统 AI 对抗（Traditional）**：Minimax + Alpha-Beta，阶梯式课程学习
   - **人机数据收集（Human）**：模仿学习与偏好注入
+- **智能自动调参**：全自动调控 MCTS 温度、噪声强度、PUCT 常数、模拟次数、每轮对弈局数等参数，基于训练进度、loss 收敛状态和胜率趋势自适应决策
 - **自动难度调控**：每 100 局自动评估 NN 胜率，动态调整传统 AI 搜索深度
+- **模型覆盖保存**：始终覆盖保存 `model.pt`（推理）和 `training_state.pt`（断点续训），不产生冗余文件
 - **自动保存**：训练中每 5 分钟自动保存模型检查点（间隔可配）
 - **经验回放池**：200 万容量循环缓冲区，多来源加权采样
 - **数据增强**：8 种对称变换（旋转 + 翻转）
@@ -125,12 +127,30 @@ python train_service.py --config config.yaml
 以**管理员**身份运行：
 
 ```bash
-# 安装服务
+# 安装服务（开机自启静默训练）
 install_service.bat
 
 # 卸载服务
 uninstall_service.bat
 ```
+
+也可以使用 VBS 脚本实现开机自启（无需管理员）：
+
+```bash
+# 将 autostart.vbs 放入 Windows 启动文件夹即可
+# Win+R → shell:startup → 复制 autostart.vbs
+```
+
+## 模型管理
+
+采用**覆盖保存策略**，仅保留 2 个文件：
+
+| 文件 | 用途 |
+|------|------|
+| `models/model.pt` | 模型权重 + 训练步数 + ELO，供 GUI 推理加载 |
+| `models/training_state.pt` | 优化器状态 + 自动调参参数，供断点续训 |
+
+每次保存和定时自动保存均覆盖旧文件，不会产生冗余检查点。
 
 ## 项目结构
 
@@ -140,17 +160,18 @@ GomokuAI_ResNet18/
 ├── network.py            # 神经网络：ResNet + 策略头 + 价值头 (~160万参数)
 ├── mcts.py               # MCTS 搜索：PUCT 选择 + GPU 批量评估
 ├── traditional_ai.py     # 传统 AI：Minimax + Alpha-Beta + 模式识别
-├── trainer.py            # 训练系统：混合训练 + 经验池 + 自动调参
+├── trainer.py            # 训练系统：混合训练 + 经验池 + 智能自动调参
 ├── gui.py                # 图形界面：PyQt6 棋盘 + 训练面板 + 实时图表
 ├── train_service.py      # 静默训练服务（无 GUI）
-├── main.py               # 入口模块
 ├── requirements.txt       # Python 依赖
 ├── train_config.json      # 训练配置（JSON 格式）
 ├── config.yaml            # 训练配置（YAML 格式）
+├── autostart.vbs          # 开机自启 VBS 脚本
 ├── install_service.bat    # Windows 服务安装脚本
 ├── uninstall_service.bat  # Windows 服务卸载脚本
 ├── models/                # 模型存储目录
-│   └── .gitkeep
+│   ├── model.pt           # 模型权重（覆盖保存，供推理使用）
+│   └── training_state.pt  # 训练状态（覆盖保存，断点续训）
 └── README.md
 ```
 
@@ -227,11 +248,24 @@ $$a^* = \arg\max_a \left[ Q(s,a) + c_{puct} \cdot P(s,a) \cdot \frac{\sqrt{\sum_
 
 ### 自动调参机制
 
-1. 定期运行 100 局 NN vs 传统 AI 评估赛
+#### 传统 AI 对手难度调控
+1. 定期运行自动评估赛 NN vs 传统 AI
 2. 统计 NN 胜率
 3. 胜率高 → 加深传统 AI 搜索深度（更强的对手）
 4. 胜率低 → 降低传统 AI 搜索深度（更容易的对手）
-5. 目标维持 NN 胜率在 20%±5%，实现阶梯式课程学习
+5. 目标维持 NN 胜率在目标区间，实现阶梯式课程学习
+
+#### 神经网络超参数智能调控
+训练期间 **AutoParameterController** 自动调整以下参数，无需人工干预：
+
+| 参数 | 调控策略 | 范围 |
+|------|---------|------|
+| **MCTS 探索温度** | Early→Mid→Late 三阶段衰减 | 1.5 → 0.1 |
+| **Dirichlet 噪声 ε** | 随训练进度线性衰减 | 0.25 → 0.05 |
+| **MCTS 模拟次数** | 根据 vs 传统AI 胜率动态调整 | 100～800 |
+| **PUCT 探索常数** | 监控 loss 标准差自动微调 | 1.2～4.0 |
+| **每轮对弈局数** | 根据经验池健康度动态调整 | 3～10 |
+| **温度截止步数** | 三阶段切换（Early=12, Mid=18, Late=10） | 10～18 |
 
 ## 依赖清单
 
