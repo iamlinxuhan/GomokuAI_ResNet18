@@ -1,0 +1,38 @@
+{
+  "training": {
+    "modes": ["self", "trad"],
+    "learning_rate": 0.02,
+    "batch_size": 1024,
+    "num_mcts_simulations": 400,
+    "total_steps": 500000,
+    "use_cuda": true,
+    "model_dir": "./models",
+    "log_dir": "./logs",
+    "save_interval_minutes": 5,
+    "auto_eval_games": 100,
+    "self_play": {
+      "num_processes": 4,
+      "mcts_simulations": 400
+    },
+    "traditional": {
+      "initial_depth": 4,
+      "depth_range": [1, 8],
+      "games_per_adjust": 10,
+      "target_win_rate": 0.20,
+      "win_rate_window": 100,
+      "adjust_step": 1
+    },
+    "human": {
+      "enabled": false,
+      "temperature_for_human_moves": 0.1
+    },
+    "replay_buffer": {
+      "capacity": 2000000,
+      "sampling_weights": {
+        "self": 0.6,
+        "trad": 0.3,
+        "human": 0.1
+      }
+    }
+  }
+}
