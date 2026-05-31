@@ -373,7 +373,9 @@ class AIThread(QThread):
                 num_simulations=self.num_simulations,
                 device=self.device
             )
-            action_probs, _ = mcts.search(self.game, temperature=0.1)
+            # Dirichlet噪声保证非确定性探索，避免每局棋步完全相同
+            action_probs, _ = mcts.search(self.game, temperature=0.1,
+                                          add_dirichlet_noise=True)
             move = get_best_move_from_probs(action_probs, self.game, deterministic=True)
             if move and move != (-1, -1):
                 self.move_ready.emit(move[0], move[1])
@@ -422,7 +424,8 @@ class MultiGameAIThread(QThread):
             game_data = []
 
             while not game.game_over:
-                action_probs, _ = mcts.search(game, temperature=0.1)
+                action_probs, _ = mcts.search(game, temperature=0.1,
+                                              add_dirichlet_noise=True)
                 state = game.get_state_planes()
                 game_data.append((state, action_probs, None, 'self'))
 

@@ -159,14 +159,19 @@ class MCTS:
         return node, search_path, game
 
     def _select_child(self, node: MCTSNode) -> Tuple[Tuple[int, int], MCTSNode]:
-        """使用PUCT公式选择最佳子节点"""
+        """使用PUCT公式选择最佳子节点（随机破平，保证非确定性探索）"""
         best_score = -float('inf')
         best_move = None
         best_child = None
 
         sqrt_parent_n = math.sqrt(node.visit_count + 1)
 
-        for move, child in node.children.items():
+        # 打乱子节点顺序以实现随机破平——当多个子节点 visit_count=0、
+        # mean_value=0 时 PUCT 全相等，必须随机选择否则整个搜索树是确定的
+        items = list(node.children.items())
+        np.random.shuffle(items)
+
+        for move, child in items:
             # PUCT公式
             q_value = child.mean_value
             u_value = self.c_puct * child.prior * sqrt_parent_n / (1 + child.visit_count)
