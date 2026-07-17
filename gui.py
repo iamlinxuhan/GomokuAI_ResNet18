@@ -659,15 +659,15 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(self.slider_batch, 0, 4)
         param_layout.addWidget(self.lbl_batch, 0, 5)
 
-        # MCTS模拟次数 - 滑动条
+        # MCTS模拟次数 - 滑动条（默认50，自动调参逐步增加）
         param_layout.addWidget(QLabel("MCTS模拟:"), 1, 0)
         self.slider_mcts = QSlider(Qt.Orientation.Horizontal)
-        self.slider_mcts.setRange(50, 800)
-        self.slider_mcts.setValue(400)
+        self.slider_mcts.setRange(10, 800)
+        self.slider_mcts.setValue(50)
         self.slider_mcts.setSingleStep(50)
         self.slider_mcts.setTickInterval(100)
         self.slider_mcts.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.lbl_mcts_val = QLabel("400")
+        self.lbl_mcts_val = QLabel("50")
         self.lbl_mcts_val.setMinimumWidth(50)
         self.slider_mcts.valueChanged.connect(
             lambda v: self.lbl_mcts_val.setText(str(v)))
@@ -717,15 +717,15 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(self.slider_eval_games, 2, 4)
         param_layout.addWidget(self.lbl_eval_games, 2, 5)
 
-        # 传统AI初始深度 — 训练时传统AI对抗的起始搜索深度
+        # 传统AI初始深度 — 训练时传统AI对抗的起始搜索深度（默认1，自动调参逐步增加）
         param_layout.addWidget(QLabel("传统AI初始深度:"), 3, 0)
         self.slider_trad_init_depth = QSlider(Qt.Orientation.Horizontal)
         self.slider_trad_init_depth.setRange(1, 8)
-        self.slider_trad_init_depth.setValue(4)
+        self.slider_trad_init_depth.setValue(1)
         self.slider_trad_init_depth.setSingleStep(1)
         self.slider_trad_init_depth.setTickInterval(1)
         self.slider_trad_init_depth.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.lbl_trad_init_depth = QLabel("4")
+        self.lbl_trad_init_depth = QLabel("1")
         self.lbl_trad_init_depth.setMinimumWidth(30)
         self.slider_trad_init_depth.valueChanged.connect(
             lambda v: self.lbl_trad_init_depth.setText(str(v)))

@@ -324,16 +324,15 @@ def recommend_batch_size(gpu_info: Dict[str, Any], gpu_tier: str,
 
     # 基础 batch 查找表（针对 128ch/7block 的经验安全值）
     base_batch_map = {
-        'tier_1': 256,    # 2-4GB
-        'tier_2': 1024,   # 4-6GB  ← RTX3060 6GB
-        'tier_3': 1024,   # 6-8GB
-        'tier_4': 2048,   # 8-12GB
-        'tier_5': 4096,   # >12GB
+        'tier_1': 128,    # 2-4GB
+        'tier_2': 256,    # 4-6GB  ← RTX3060 6GB: 256安全起步
+        'tier_3': 512,    # 6-8GB
+        'tier_4': 1024,   # 8-12GB
+        'tier_5': 2048,   # >12GB
     }
-    base_batch = base_batch_map.get(gpu_tier, 512)
+    base_batch = base_batch_map.get(gpu_tier, 256)
 
     # 根据网络规模调整
-    # 更大网络每样本消耗更多显存，需减小 batch
     scale_factor = ((num_filters / 128.0) ** 2) * (num_res_blocks / 7.0) ** 0.5
     adjusted_batch = int(base_batch / max(0.5, scale_factor))
 
@@ -345,10 +344,6 @@ def recommend_batch_size(gpu_info: Dict[str, Any], gpu_tier: str,
             safe_batch = bs
         else:
             break
-
-    # 如果显存偏少（例如 6GB 卡实际可用可能不到 6GB），额外降一级
-    if mem_mb < 6144 and safe_batch > 512:
-        safe_batch = max(256, safe_batch // 2)
 
     return safe_batch
 
@@ -369,23 +364,21 @@ def recommend_mcts_simulations(gpu_info: Dict[str, Any], gpu_tier: str,
         return min(200, max(50, cpu_count * 10))
 
     base_simulations = {
-        'tier_0': 100,
-        'tier_1': 200,
-        'tier_2': 400,    # ← RTX 3060 6GB: 400次平衡速度和棋力
-        'tier_3': 600,
-        'tier_4': 800,
-        'tier_5': 1200,
+        'tier_0': 50,
+        'tier_1': 50,
+        'tier_2': 50,     # 默认50次，自动调参会逐步增加
+        'tier_3': 100,
+        'tier_4': 200,
+        'tier_5': 400,
     }
 
-    # 对于 Turing/Ampere 架构有 Tensor Cores，可以多模拟一些
-    cc = gpu_info.get('compute_capability', (0, 0))
-    tensor_core_bonus = 1.3 if cc >= (7, 0) else 1.0  # Tensor Cores 加速约 30%
+    # 训练模式下不应用 Tensor Core 加成（优先保证速度）
+    # 对弈模式下通过 set_timeout 控制搜索强度
 
-    sims = base_simulations.get(gpu_tier, 400)
-    sims = int(sims * tensor_core_bonus)
+    sims = base_simulations.get(gpu_tier, 50)
 
-    # 限制在合理范围内
-    return max(50, min(2000, sims))
+    # 限制在合理范围内（训练时从低开始，自动调参逐步增加）
+    return max(20, min(2000, sims))
 
 
 def recommend_traditional_ai_depth(gpu_tier: str, cpu_count: int) -> Tuple[int, int, int]:
@@ -402,12 +395,12 @@ def recommend_traditional_ai_depth(gpu_tier: str, cpu_count: int) -> Tuple[int, 
 
     # GPU 加速版：搜索速度大幅提升
     depth_map = {
-        'tier_0': (2, 1, 4),
-        'tier_1': (4, 1, 6),
-        'tier_2': (4, 1, 8),     # ← RTX 3060: 4层起步, 最大8层
-        'tier_3': (5, 1, 10),
-        'tier_4': (6, 1, 12),
-        'tier_5': (8, 1, 16),
+        'tier_0': (1, 1, 4),
+        'tier_1': (1, 1, 6),
+        'tier_2': (1, 1, 8),     # 训练默认深度1，自动调参逐步增加
+        'tier_3': (2, 1, 10),
+        'tier_4': (3, 1, 12),
+        'tier_5': (4, 1, 16),
     }
     return depth_map.get(gpu_tier, (4, 1, 8))
 

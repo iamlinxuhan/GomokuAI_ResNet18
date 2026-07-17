@@ -416,8 +416,8 @@ class SelfPlayWorker:
 class TraditionalOpponentWorker:
     """传统AI对抗数据生成器 v2.0 — 训练模式使用CPU快速搜索"""
 
-    def __init__(self, model: GomokuNet, trad_depth: int = 2,
-                 mcts_simulations: int = 100, device: torch.device = None):
+    def __init__(self, model: GomokuNet, trad_depth: int = 1,
+                 mcts_simulations: int = 50, device: torch.device = None):
         """
         Args:
             model: 神经网络模型
@@ -1143,10 +1143,10 @@ class Trainer:
 
     def _generate_traditional_data(self, num_games: int = 1):
         """生成传统AI对抗数据（v2.0: 训练模式，CPU快速搜索 + 低深度）"""
-        # 训练数据生成：用深度2快速搜索（非训练评估时才用高深度）
-        train_trad_depth = min(self.trad_depth, max(2, self.adjuster.current_depth))
-        # 训练用MCTS：降低模拟次数加快速度
-        train_mcts = min(100, self.num_mcts_simulations)
+        # 训练数据生成：从低深度开始（自动调参逐步增加）
+        train_trad_depth = min(self.trad_depth, max(1, self.adjuster.current_depth))
+        # 训练用MCTS：从低模拟次数开始（自动调参逐步增加）
+        train_mcts = min(50, self.num_mcts_simulations)
         worker = TraditionalOpponentWorker(
             model=self.model,
             trad_depth=train_trad_depth,

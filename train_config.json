@@ -3,8 +3,8 @@
   "training": {
     "modes": ["self", "trad"],
     "learning_rate": 0.02,
-    "batch_size": 1024,
-    "num_mcts_simulations": 400,
+    "batch_size": 256,
+    "num_mcts_simulations": 50,
     "total_steps": 500000,
     "use_cuda": true,
     "mixed_precision": true,
@@ -19,7 +19,7 @@
       "mcts_simulations": 400
     },
     "traditional": {
-      "initial_depth": 4,
+      "initial_depth": 1,
       "depth_range": [1, 8],
       "games_per_adjust": 10,
       "target_win_rate": 0.20,

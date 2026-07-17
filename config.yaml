@@ -40,8 +40,8 @@ training:
 
   # ── 训练超参数 ──
   learning_rate: 0.02         # 学习率（会根据 batch_size 自动缩放）
-  batch_size: 1024            # 批大小（会根据 GPU 显存自动调整）
-  num_mcts_simulations: 400   # MCTS 每次搜索的模拟次数
+  batch_size: 256             # 批大小（会根据 GPU 显存自动调整）
+  num_mcts_simulations: 50    # MCTS 每次搜索的模拟次数（默认50，自动调参逐步增加）
   total_steps: 500000         # 总训练步数
   use_cuda: true              # 是否使用 GPU（自动检测）
   mixed_precision: true       # 混合精度训练（AMP），有 GPU 时自动开启
@@ -63,7 +63,7 @@ training:
 
   # ── 传统AI ──
   traditional:
-    initial_depth: 4          # 初始搜索深度
+    initial_depth: 1          # 初始搜索深度（默认1，自动调参逐步增加）
     depth_range: [1, 8]       # 深度范围（会根据GPU性能自动调整）
     games_per_adjust: 10      # 每多少局调整一次深度
     target_win_rate: 0.20     # 目标胜率（NN vs 传统AI）
