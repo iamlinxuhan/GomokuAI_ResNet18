@@ -536,26 +536,44 @@ class TrainingThread(QThread):
 
             # 每 2 秒轮询训练状态并发送到 GUI
             last_emit_total = -1
-            while bg.is_alive():
+            last_emit_step = -1
+            while bg.is_alive() or (self._train_error is not None and bg.is_alive()):
                 if self.trainer:
                     status = self.trainer.get_status()
                     self.status_update.emit(status)
                     total = status.get('total_games', 0)
+                    step = status.get('global_step', 0)
+                    buf = status.get('buffer_size', 0)
+
+                    # 训练步变化时也输出日志
+                    if step > last_emit_step:
+                        self.log_message.emit(
+                            f"训练步 {step} | 经验池 {buf} | 总对弈 {total} 局"
+                        )
+                        last_emit_step = step
+
                     if total > last_emit_total:
                         self.log_message.emit(
-                            f"已对弈 {total} 局 | 经验池 {status.get('buffer_size', 0)} | "
-                            f"训练步 {status.get('global_step', 0)}"
+                            f"已对弈 {total} 局 | 经验池 {buf} | 训练步 {step}"
                         )
                         last_emit_total = total
+
                 self.msleep(2000)
 
-            bg.join()
+            bg.join(timeout=5)
             if self._train_error:
+                err_msg = str(self._train_error)
+                self.log_message.emit(f"❌ 训练错误: {err_msg}")
+                # 最后再发一次状态（让图表显示最终数据）
+                if self.trainer:
+                    self.status_update.emit(self.trainer.get_status())
                 raise self._train_error
             if self.trainer:
                 self.status_update.emit(self.trainer.get_status())
+                self.log_message.emit("训练正常完成")
         except Exception as e:
-            self.log_message.emit(f"训练错误: {e}")
+            if str(e) not in ['', 'None']:
+                self.log_message.emit(f"❌ 训练错误: {e}")
 
     def stop_training(self):
         if self.trainer:

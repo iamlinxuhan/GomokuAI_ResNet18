@@ -1100,6 +1100,16 @@ class Trainer:
                 self.total_games_trad = state.get('total_games_trad', 0)
                 self.total_games_human = state.get('total_games_human', 0)
                 self.total_nn_wins = state.get('total_nn_wins', 0)
+
+                # 加载经验池（断点续训不丢数据）
+                buf_path = os.path.join(self.model_dir, 'replay_buffer.pt')
+                if os.path.exists(buf_path):
+                    try:
+                        self.replay_buffer.load(buf_path)
+                        logger.info(f"加载经验池: {len(self.replay_buffer)}条")
+                    except Exception as e:
+                        logger.warning(f"经验池加载失败: {e}")
+
             except Exception as e:
                 logger.warning(f"训练状态加载失败: {e}")
 
@@ -1138,9 +1148,15 @@ class Trainer:
             }, state_tmp)
             os.replace(state_tmp, state_path)
         except Exception:
-            # 状态文件不重要，保存失败不影响继续训练
             if os.path.exists(state_tmp):
                 os.remove(state_tmp)
+
+        # 保存经验池（让重启后能接着训练，不丢数据）
+        buf_path = os.path.join(self.model_dir, 'replay_buffer.pt')
+        try:
+            self.replay_buffer.save(buf_path)
+        except Exception as e:
+            logger.warning(f"经验池保存失败: {e}")
 
     def _generate_self_play_data(self, num_games: int = 1):
         """生成自我对弈数据（使用智能调控参数）"""
