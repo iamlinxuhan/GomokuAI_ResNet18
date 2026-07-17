@@ -40,7 +40,7 @@ training:
 
   # ── 训练超参数 ──
   learning_rate: 0.02         # 学习率（会根据 batch_size 自动缩放）
-  batch_size: 256             # 批大小（会根据 GPU 显存自动调整）
+  batch_size: 64              # 批大小（数据增强8倍后实际batch=512）
   num_mcts_simulations: 50    # MCTS 每次搜索的模拟次数（默认50，自动调参逐步增加）
   total_steps: 500000         # 总训练步数
   use_cuda: true              # 是否使用 GPU（自动检测）

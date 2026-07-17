@@ -651,7 +651,7 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(QLabel("批量大小:"), 0, 3)
         self.slider_batch = QSlider(Qt.Orientation.Horizontal)
         self.slider_batch.setRange(64, 4096)
-        self.slider_batch.setValue(1024)
+        self.slider_batch.setValue(64)
         self.slider_batch.setSingleStep(64)
         self.slider_batch.setTickInterval(512)
         self.lbl_batch = QLabel("1024")

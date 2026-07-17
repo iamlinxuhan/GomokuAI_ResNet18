@@ -1306,6 +1306,10 @@ class Trainer:
                 self.loss_history.append({**loss_info, 'step': self.global_step})
                 self._last_loss_info = loss_info
 
+        # 训练后清理 GPU 缓存，防止显存溢出
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
     def _evaluate_models(self, num_games: int = 50) -> Dict[str, float]:
         """评估当前模型 vs 最佳模型"""
         wins = 0

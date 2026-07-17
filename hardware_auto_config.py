@@ -324,11 +324,11 @@ def recommend_batch_size(gpu_info: Dict[str, Any], gpu_tier: str,
 
     # 基础 batch 查找表（针对 128ch/7block 的经验安全值）
     base_batch_map = {
-        'tier_1': 128,    # 2-4GB
-        'tier_2': 256,    # 4-6GB  ← RTX3060 6GB: 256安全起步
-        'tier_3': 512,    # 6-8GB
-        'tier_4': 1024,   # 8-12GB
-        'tier_5': 2048,   # >12GB
+        'tier_1': 64,     # 2-4GB
+        'tier_2': 64,     # 4-6GB  ← RTX3060 6GB: 64安全（数据增强8→512）
+        'tier_3': 128,    # 6-8GB
+        'tier_4': 256,    # 8-12GB
+        'tier_5': 512,    # >12GB
     }
     base_batch = base_batch_map.get(gpu_tier, 256)
 

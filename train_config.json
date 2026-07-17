@@ -3,7 +3,7 @@
   "training": {
     "modes": ["self", "trad"],
     "learning_rate": 0.02,
-    "batch_size": 256,
+    "batch_size": 64,
     "num_mcts_simulations": 50,
     "total_steps": 500000,
     "use_cuda": true,
