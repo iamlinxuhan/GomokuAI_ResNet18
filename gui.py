@@ -871,62 +871,13 @@ class TrainingPanel(QDialog):
         self.chart_layout = QVBoxLayout(self.chart_widget)
         self.chart_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 创建 matplotlib 图表（亮色背景配鲜艳线条）
-        self.fig = Figure(figsize=(8, 4.5), dpi=100)
-        self.fig.patch.set_facecolor('#3c3c3c')
-
-        chart_style = {
-            'facecolor': '#3c3c3c',
-            'label_color': '#cccccc',
-            'tick_color': '#999999',
-            'grid_alpha': 0.15,
-            'label_color': '#333333',
-            'tick_color': '#666666',
-            'grid_alpha': 0.2,
-        }
-
-        # 损失曲线 (左上) —— 红/绿/蓝
-        self.ax_loss = self.fig.add_subplot(2, 2, 1)
-        self._style_ax(self.ax_loss, '损失曲线', '步数', '损失', chart_style)
-        self.line_total, = self.ax_loss.plot([], [], '#e03131', lw=1.5, label='总损失')
-        self.line_policy, = self.ax_loss.plot([], [], '#2f9e44', lw=0.8, alpha=0.7, label='策略')
-        self.line_value, = self.ax_loss.plot([], [], '#1971c2', lw=0.8, alpha=0.7, label='价值')
-        self.ax_loss.legend(fontsize=7, loc='upper right')
-        self._add_waiting_text(self.ax_loss)
-
-        # 胜率曲线 (右上)
-        self.ax_wr = self.fig.add_subplot(2, 2, 2)
-        self._style_ax(self.ax_wr, 'NN vs 传统AI 胜率', '局数', '胜率', chart_style)
-        self.line_wr, = self.ax_wr.plot([], [], '#e03131', lw=1.5)
-        self.ax_wr.axhline(0.20, color='#f08c00', ls='--', lw=0.8, alpha=0.6, label='目标20%')
-        self.ax_wr.set_ylim(-0.05, 1.05)
-        self.ax_wr.legend(fontsize=7, loc='upper left')
-        self._add_waiting_text(self.ax_wr)
-
-        # MCTS/温度曲线 (左下)
-        self.ax_mcts = self.fig.add_subplot(2, 2, 3)
-        self._style_ax(self.ax_mcts, '自动参数趋势', '步数', 'MCTS模拟', chart_style)
-        self.line_mcts, = self.ax_mcts.plot([], [], '#1971c2', lw=1.5, label='MCTS')
-        self.ax_mcts_twin = self.ax_mcts.twinx()
-        self.ax_mcts_twin.set_ylabel('温度', color='#e03131', fontsize=8)
-        self.ax_mcts_twin.tick_params(colors='#e03131', labelsize=7)
-        self.line_temp, = self.ax_mcts_twin.plot([], [], '#e03131', lw=1, label='温度')
-        self.ax_mcts.legend(fontsize=7, loc='upper left')
-        self._add_waiting_text(self.ax_mcts)
-
-        # 学习率 (右下)
-        self.ax_lr = self.fig.add_subplot(2, 2, 4)
-        self._style_ax(self.ax_lr, '学习率', '步数', 'LR', chart_style)
-        self.line_lr, = self.ax_lr.plot([], [], '#2f9e44', lw=1.5)
-        self._add_waiting_text(self.ax_lr)
-
-        self.fig.tight_layout(pad=1.5)
-
-        self.chart_canvas = FigureCanvas(self.fig)
-        self.chart_canvas.setMinimumHeight(280)
-        self.chart_canvas.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.chart_layout.addWidget(self.chart_canvas)
+                # 创建图表（含异常保护）
+        self.fig = None
+        self.chart_canvas = None
+        self.ax_loss = self.ax_wr = self.ax_mcts = self.ax_lr = None
+        self.ax_mcts_twin = None
+        self._chart_error = None
+        self._init_charts()
         monitor_layout.addWidget(self.chart_widget, stretch=1)
 
         # 进度条
@@ -1183,8 +1134,81 @@ class TrainingPanel(QDialog):
                 transform=ax.transAxes, ha='center', va='center',
                 fontsize=10, color='#888888', style='italic')
 
+    def _init_charts(self):
+        """初始化 matplotlib 图表（异常安全，失败时显示文字替代）"""
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+
+            self.fig = Figure(figsize=(8, 4.5), dpi=100)
+            self.fig.patch.set_facecolor('#3c3c3c')
+
+            style = {
+                'facecolor': '#3c3c3c',
+                'label_color': '#cccccc',
+                'tick_color': '#999999',
+                'grid_alpha': 0.15,
+            }
+
+            # 损失曲线 (左上) 红/绿/蓝
+            self.ax_loss = self.fig.add_subplot(2, 2, 1)
+            self._style_ax(self.ax_loss, '损失曲线', '步数', '损失', style)
+            self.line_total, = self.ax_loss.plot([], [], '#ff6b6b', lw=1.5, label='总损失')
+            self.line_policy, = self.ax_loss.plot([], [], '#51cf66', lw=0.8, alpha=0.7, label='策略')
+            self.line_value, = self.ax_loss.plot([], [], '#339af0', lw=0.8, alpha=0.7, label='价值')
+            self.ax_loss.legend(fontsize=7, loc='upper right')
+            self._add_waiting_text(self.ax_loss)
+
+            # 胜率曲线 (右上)
+            self.ax_wr = self.fig.add_subplot(2, 2, 2)
+            self._style_ax(self.ax_wr, 'NN vs 传统AI 胜率', '局数', '胜率', style)
+            self.line_wr, = self.ax_wr.plot([], [], '#ff6b6b', lw=1.5)
+            self.ax_wr.axhline(0.20, color='#fcc419', ls='--', lw=0.8, alpha=0.6, label='目标20%')
+            self.ax_wr.set_ylim(-0.05, 1.05)
+            self.ax_wr.legend(fontsize=7, loc='upper left')
+            self._add_waiting_text(self.ax_wr)
+
+            # MCTS/温度曲线 (左下)
+            self.ax_mcts = self.fig.add_subplot(2, 2, 3)
+            self._style_ax(self.ax_mcts, '自动参数趋势', '步数', 'MCTS模拟', style)
+            self.line_mcts, = self.ax_mcts.plot([], [], '#339af0', lw=1.5, label='MCTS')
+            self.ax_mcts_twin = self.ax_mcts.twinx()
+            self.ax_mcts_twin.set_ylabel('温度', color='#ff6b6b', fontsize=8)
+            self.ax_mcts_twin.tick_params(colors='#ff6b6b', labelsize=7)
+            self.line_temp, = self.ax_mcts_twin.plot([], [], '#ff6b6b', lw=1, label='温度')
+            self.ax_mcts.legend(fontsize=7, loc='upper left')
+            self._add_waiting_text(self.ax_mcts)
+
+            # 学习率 (右下)
+            self.ax_lr = self.fig.add_subplot(2, 2, 4)
+            self._style_ax(self.ax_lr, '学习率', '步数', 'LR', style)
+            self.line_lr, = self.ax_lr.plot([], [], '#51cf66', lw=1.5)
+            self._add_waiting_text(self.ax_lr)
+
+            self.fig.tight_layout(pad=1.5)
+
+            self.chart_canvas = FigureCanvas(self.fig)
+            self.chart_canvas.setMinimumHeight(280)
+            self.chart_canvas.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            self.chart_layout.addWidget(self.chart_canvas)
+
+            self._chart_error = None
+
+        except Exception as e:
+            self._chart_error = str(e)
+            # 显示错误信息替代图表
+            err_label = QLabel(
+                f"图表加载失败: {e}\n请确认已安装 matplotlib")
+            err_label.setStyleSheet("color: #ff6b6b; padding: 20px;")
+            err_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.chart_layout.addWidget(err_label)
+
     def _update_charts(self, status: dict):
         """更新图表数据（v2.0: 即使无训练数据也显示等待提示）"""
+        if self.fig is None:
+            return  # 图表初始化失败，不更新
+
         loss_hist = status.get('loss_history', [])
         wr_hist = status.get('win_rate_history', [])
 
