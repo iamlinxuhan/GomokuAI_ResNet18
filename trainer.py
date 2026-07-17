@@ -1656,8 +1656,22 @@ class Trainer:
         self._oom_count += 1
         oom_count = self._oom_count
 
-        logger.warning(f"⚠️ OOM #{oom_count} at step={self.global_step}，自动降级中...")
+        logger.warning(f"⚠️ OOM #{oom_count} at step={self.global_step}，正在保存数据并降级...")
         torch.cuda.empty_cache()
+
+        # ── 先保存数据防止丢失（清缓存后 GPU 内存已释放，保存安全） ──
+        try:
+            self._save_checkpoint()
+            logger.info(f"   模型已安全保存 (step={self.global_step})")
+        except Exception as save_err:
+            logger.warning(f"   模型保存失败: {save_err}")
+
+        try:
+            buf_path = os.path.join(self.model_dir, f'replay_buffer_step{self.global_step}.npz')
+            self.replay_buffer.save(buf_path)
+            logger.info(f"   经验池已保存 ({len(self.replay_buffer)}条)")
+        except Exception as buf_err:
+            logger.warning(f"   经验池保存失败: {buf_err}")
 
         # 标记当前级别为 unsafe（恢复时跳过）
         if oom_count == 1:
