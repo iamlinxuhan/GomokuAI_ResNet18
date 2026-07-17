@@ -43,6 +43,9 @@ wandb/
 # Config overrides (user-specific)
 config.local.yaml
 
+# Hardware config cache (auto-generated, user-specific)
+hardware_config.json
+
 # PyInstaller
 *.spec
 

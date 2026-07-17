@@ -100,8 +100,8 @@ def _default_config() -> dict:
     否则使用保守的通用默认值。
     """
     try:
-        from hardware_auto_config import get_auto_config
-        auto_config = get_auto_config()
+        from hardware_auto_config import load_hardware_config
+        auto_config = load_hardware_config()
         return auto_config
     except Exception:
         pass

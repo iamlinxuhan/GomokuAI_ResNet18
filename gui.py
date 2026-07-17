@@ -60,8 +60,8 @@ logger = logging.getLogger(__name__)
 
 # 硬件自动配置（首次导入时检测硬件）
 try:
-    from hardware_auto_config import get_auto_config, get_hardware_summary, format_hardware_summary
-    _HW_CONFIG = get_auto_config()
+    from hardware_auto_config import load_hardware_config, get_hardware_summary, format_hardware_summary
+    _HW_CONFIG = load_hardware_config()  # 有JSON读JSON，没有就检测并保存
     _HW_SUMMARY = get_hardware_summary()
     _HW_SUMMARY_TEXT = format_hardware_summary(_HW_SUMMARY)
 except Exception:
@@ -587,9 +587,9 @@ class TrainingPanel(QDialog):
 
         # 加载硬件自动配置
         try:
-            from hardware_auto_config import get_hardware_summary, get_auto_config, format_hardware_summary, format_auto_config_summary
+            from hardware_auto_config import get_hardware_summary, load_hardware_config, format_hardware_summary, format_auto_config_summary
             self.hw_summary = get_hardware_summary()
-            self.auto_config = get_auto_config()
+            self.auto_config = load_hardware_config()
             self.hw_summary_text = format_hardware_summary(self.hw_summary)
             self.auto_config_text = format_auto_config_summary(self.auto_config)
         except Exception:

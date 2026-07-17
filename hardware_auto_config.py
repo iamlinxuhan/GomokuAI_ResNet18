@@ -759,6 +759,83 @@ def benchmark_gpu_memory(num_filters: int = 128, num_res_blocks: int = 7,
 
 
 # ============================================================================
+# JSON 配置文件读写（一次检测，永久使用，可手动编辑）
+# ============================================================================
+
+HARDWARE_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hardware_config.json')
+
+
+def save_hardware_config(config: dict = None, hw_summary: dict = None):
+    """
+    将硬件信息和推荐配置保存到 JSON 文件。
+    下次启动时直接读取，无需重新检测硬件。
+
+    Args:
+        config: get_auto_config() 返回的完整配置
+        hw_summary: get_hardware_summary() 返回的硬件摘要
+    """
+    if config is None:
+        config = get_auto_config()
+    if hw_summary is None:
+        hw_summary = get_hardware_summary()
+
+    save_data = {
+        '_meta': {
+            'version': '2.0',
+            'description': '硬件检测配置缓存，可手动编辑调整参数',
+            'note': '删除此文件后下次启动会自动重新检测硬件',
+        },
+        'hardware': hw_summary,
+        'training': config.get('training', {}),
+        'network': config.get('network', {}),
+    }
+
+    try:
+        with open(HARDWARE_JSON, 'w', encoding='utf-8') as f:
+            json.dump(save_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"硬件配置已保存到 {HARDWARE_JSON}")
+    except Exception as e:
+        logger.warning(f"保存硬件配置失败: {e}")
+
+
+def load_hardware_config() -> dict:
+    """
+    从 JSON 文件加载硬件配置。如果文件不存在则重新检测并保存。
+
+    Returns:
+        get_auto_config() 格式的完整配置字典
+    """
+    if not os.path.exists(HARDWARE_JSON):
+        logger.info("未找到硬件配置文件，正在检测硬件...")
+        config = get_auto_config()
+        save_hardware_config(config)
+        return config
+
+    try:
+        with open(HARDWARE_JSON, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+
+        logger.info(f"从 {HARDWARE_JSON} 加载硬件配置")
+
+        # 用保存的硬件信息重新生成配置（保留用户可能手动修改的值）
+        config = get_auto_config()
+
+        # 如果用户手动编辑了 JSON 中的 training 或 network，优先使用
+        if 'training' in saved:
+            _deep_merge(config['training'], saved['training'])
+        if 'network' in saved:
+            _deep_merge(config['network'], saved['network'])
+
+        return config
+
+    except Exception as e:
+        logger.warning(f"加载硬件配置失败 ({e})，重新检测...")
+        config = get_auto_config()
+        save_hardware_config(config)
+        return config
+
+
+# ============================================================================
 # 主入口：打印硬件信息和推荐配置
 # ============================================================================
 
