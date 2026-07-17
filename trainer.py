@@ -685,7 +685,7 @@ class AutoParameterController:
         self.recent_win_rates: deque = deque(maxlen=50)
         self.loss_stable_count = 0
         self.last_mcts_adjust_step = 0
-        self.mcts_adjust_cooldown = 500  # 每500步调整一次MCTS（原2000太大）
+        self.mcts_adjust_cooldown = 2000
 
         # v2.0 新追踪指标
         self.recent_value_losses: deque = deque(maxlen=200)
@@ -772,17 +772,8 @@ class AutoParameterController:
         # ── 6. PUCT 探索常数 ──
         self._adjust_puct()
 
-        # ── 7. 每轮对弈局数 ──
-        if buffer_size < 1000:
-            self.games_per_iteration = 1   # 经验池极小：先跑1局，快速出训练数据
-        elif buffer_size < 10000:
-            self.games_per_iteration = 2   # 经验池小：少生成多训练
-        elif buffer_size > 200000:
-            self.games_per_iteration = 2
-        elif buffer_size > 100000:
-            self.games_per_iteration = 3
-        else:
-            self.games_per_iteration = 4
+        # ── 7. 每轮对弈局数（保持用户设置，不自动覆盖） ──
+        pass
 
         # ── 8. 停滞检测：如果 loss 长时间不下降，临时增加探索 ──
         self._detect_stagnation()
@@ -1151,10 +1142,9 @@ class Trainer:
 
     def _generate_traditional_data(self, num_games: int = 1):
         """生成传统AI对抗数据（v2.0: 训练模式，CPU快速搜索 + 低深度）"""
-        # 训练数据生成：从低深度开始（自动调参逐步增加）
-        train_trad_depth = min(self.trad_depth, max(1, self.adjuster.current_depth))
-        # 训练用MCTS：从低模拟次数开始（自动调参逐步增加）
-        train_mcts = min(50, self.num_mcts_simulations)
+        # 使用用户滑条设置的深度和MCTS值
+        train_trad_depth = max(1, self.adjuster.current_depth)
+        train_mcts = self.num_mcts_simulations
         worker = TraditionalOpponentWorker(
             model=self.model,
             trad_depth=train_trad_depth,
@@ -1477,13 +1467,10 @@ class Trainer:
                     time.sleep(1)
                     continue
 
-                # ── 获取智能调控参数（自动调参优先于初始传入值） ──
+                # ── 获取智能调控参数 ──
                 ap = self.auto_params.get_params()
-                if games_per_iteration is not None:
-                    # 初始传入值作为上限，自动调参可根据经验池状况取更小值
-                    auto_games = min(games_per_iteration, ap.games_per_iteration)
-                else:
-                    auto_games = ap.games_per_iteration
+                # 使用用户滑条设置的值，不自动覆盖
+                auto_games = games_per_iteration if games_per_iteration is not None else ap.games_per_iteration
 
                 # ── 生成训练数据 + 立即训练（边生成边训练，图表实时更新） ──
                 min_train = 64
