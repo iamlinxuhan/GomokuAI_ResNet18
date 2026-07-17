@@ -958,9 +958,9 @@ class Trainer:
 
         # ── 学习率调度（v2.0: Cosine Annealing with Warm Restarts） ──
         total_steps = train_cfg.get('total_steps', 500000)
-        warmup_steps = int(total_steps * 0.05)
+        warmup_steps = max(1, int(total_steps * 0.05))
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer, T_0=warmup_steps * 4, T_mult=2, eta_min=lr * 0.01
+            self.optimizer, T_0=max(1, warmup_steps * 4), T_mult=2, eta_min=lr * 0.01
         )
         self.warmup_steps = warmup_steps
         self.base_lr = lr
@@ -1080,13 +1080,8 @@ class Trainer:
                 self.global_step = state.get('step', self.global_step)
                 if state.get('optimizer_state_dict'):
                     self.optimizer.load_state_dict(state['optimizer_state_dict'])
-                if state.get('auto_params'):
-                    ap = state['auto_params']
-                    self.auto_params.mcts_simulations = ap.get('mcts_simulations', 200)
-                    self.auto_params.temperature = ap.get('temperature', 1.5)
-                    self.auto_params.dirichlet_epsilon = ap.get('dirichlet_epsilon', 0.25)
-                    self.auto_params.c_puct = ap.get('c_puct', 2.5)
-                    self.auto_params.games_per_iteration = ap.get('games_per_iteration', 5)
+                # 注意：auto_params 不从旧状态恢复——用户通过GUI滑条设置的初始值优先
+                # 自动调参控制器会在训练过程中根据最新情况重新调整参数
                 logger.info(f"加载训练状态: step={self.global_step}")
                 self.total_games_self = state.get('total_games_self', 0)
                 self.total_games_trad = state.get('total_games_trad', 0)
