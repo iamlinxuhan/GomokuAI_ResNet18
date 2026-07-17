@@ -1571,15 +1571,7 @@ class Trainer:
             logger.info("训练被用户中断")
         except RuntimeError as e:
             if 'out of memory' in str(e).lower():
-                logger.warning(f"显存溢出(OOM) at step={self.global_step}，自动恢复...")
-                torch.cuda.empty_cache()
-                # 降低 batch_size 到一半
-                self.batch_size = max(16, self.batch_size // 2)
-                logger.info(f"batch_size 降为 {self.batch_size}，继续训练")
-                # 不清空经验池，继续训练
-                self.running = True
-                self.train_loop(total_steps=total_steps,
-                                games_per_iteration=games_per_iteration)
+                self._handle_oom(total_steps, games_per_iteration)
             else:
                 logger.error(f"训练错误 (step={self.global_step}): {e}", exc_info=True)
         except Exception as e:
@@ -1587,6 +1579,81 @@ class Trainer:
         finally:
             self._save_checkpoint()
             logger.info(f"训练已停止 (step={self.global_step})")
+
+    def _handle_oom(self, total_steps, games_per_iteration):
+        """OOM 自动恢复：逐级降级直到显存安全"""
+        oom_count = getattr(self, '_oom_count', 0) + 1
+        self._oom_count = oom_count
+
+        logger.warning(f"⚠️ OOM #{oom_count} at step={self.global_step}，自动降级中...")
+        torch.cuda.empty_cache()
+
+        if oom_count == 1:
+            # 第一级：batch_size 砍半
+            old_bs = self.batch_size
+            self.batch_size = max(16, self.batch_size // 2)
+            self.gradient_accumulation_steps = min(4, self.gradient_accumulation_steps * 2)
+            logger.info(f"   batch_size: {old_bs} → {self.batch_size}")
+            logger.info(f"   梯度累积: → {self.gradient_accumulation_steps}")
+            self._retry_training(total_steps, games_per_iteration)
+
+        elif oom_count == 2:
+            # 第二级：关闭数据增强（8倍内存释放）
+            self.augmentation_enabled = False
+            logger.info(f"   数据增强: 已关闭（显存降到 1/8）")
+            self._retry_training(total_steps, games_per_iteration)
+
+        elif oom_count == 3:
+            # 第三级：batch_size 再砍半
+            old_bs = self.batch_size
+            self.batch_size = max(8, self.batch_size // 2)
+            logger.info(f"   batch_size: {old_bs} → {self.batch_size}")
+            self._retry_training(total_steps, games_per_iteration)
+
+        elif oom_count == 4:
+            # 第四级：缩小网络（减少通道数）
+            logger.info(f"   缩小网络以减少显存占用...")
+            try:
+                old_filters = self.model.num_filters
+                new_filters = max(32, old_filters // 2)
+                new_blocks = max(3, self.model.num_res_blocks - 2)
+                from network import GomokuNet
+                new_model = GomokuNet(
+                    num_filters=new_filters,
+                    num_res_blocks=new_blocks,
+                    use_se=False,  # 关掉SE省显存
+                ).to(self.device)
+                # 只复制能匹配的权重
+                old_sd = self.model.state_dict()
+                new_sd = new_model.state_dict()
+                for k in new_sd:
+                    if k in old_sd and old_sd[k].shape == new_sd[k].shape:
+                        new_sd[k] = old_sd[k]
+                new_model.load_state_dict(new_sd)
+                self.model = new_model
+                logger.info(f"   网络: {old_filters}ch→{new_filters}ch, SE已关闭")
+            except Exception as net_err:
+                logger.warning(f"   网络缩小失败: {net_err}")
+
+            # 重建优化器（新网络参数不同）
+            from torch import optim
+            self.optimizer = optim.SGD(
+                self.model.parameters(), lr=self.base_lr,
+                momentum=0.9, weight_decay=1e-4)
+            self._retry_training(total_steps, games_per_iteration)
+
+        else:
+            logger.error(f"❌ OOM 恢复失败（已尝试 {oom_count} 次），训练终止")
+            self._save_checkpoint()
+
+    def _retry_training(self, total_steps, games_per_iteration):
+        """OOM 恢复后继续训练（非递归，重新进入主循环）"""
+        self.running = True
+        self.paused = False
+        logger.info(f"   恢复训练 (step={self.global_step})...")
+        # 用循环而不是递归避免栈溢出
+        self.train_loop(total_steps=total_steps,
+                        games_per_iteration=games_per_iteration)
 
     def stop(self):
         self.running = False
