@@ -1051,6 +1051,16 @@ class Trainer:
         # 加载已有模型
         self._load_latest_model()
 
+        # ── 自适应参数追踪（OOM降级后自动恢复用） ──
+        self._target_batch_size = self.batch_size          # 原始目标值
+        self._target_augmentation = self.augmentation_enabled
+        self._oom_unsafe_levels: set = set()               # 已确认不安全的降级级别
+        self._oom_count = 0                                # OOM 累计次数
+        self._last_restore_check = 0                       # 上次检查恢复的步数
+        self._restore_interval = 500                       # 每500步检查一次
+        self._target_games = train_cfg.get('games_per_iteration', 3)
+        self._auto_games_current = self._target_games
+
         logger.info(f"训练器 v2.0 初始化完成: batch={self.batch_size}, "
                     f"effective_batch={self.effective_batch_size}, "
                     f"MCTS={self.num_mcts_simulations}, "
@@ -1481,8 +1491,10 @@ class Trainer:
 
                 # ── 获取智能调控参数 ──
                 ap = self.auto_params.get_params()
-                # 自动调参可根据经验池状况取更小值（加速首轮出数据）
-                if games_per_iteration is not None:
+                # 优先使用 OOM 自适应值（可能被降级或恢复），其次用滑条值
+                if self._oom_count > 0:
+                    auto_games = min(self._auto_games_current, ap.games_per_iteration)
+                elif games_per_iteration is not None:
                     auto_games = min(games_per_iteration, ap.games_per_iteration)
                 else:
                     auto_games = ap.games_per_iteration
@@ -1560,6 +1572,12 @@ class Trainer:
                     })
                     last_eval_time = time.time()
 
+                # ── 自适应恢复：显存空闲时逐步恢复被OOM降低的参数 ──
+                if self.device.type == 'cuda' and self._oom_count > 0:
+                    if self.global_step - self._last_restore_check >= self._restore_interval:
+                        self._try_restore_params()
+                        self._last_restore_check = self.global_step
+
                 # ── 参数日志（每 5 分钟） ──
                 params_elapsed = time.time() - last_params_log_time
                 if params_elapsed > 300:
@@ -1580,15 +1598,78 @@ class Trainer:
             self._save_checkpoint()
             logger.info(f"训练已停止 (step={self.global_step})")
 
+    def _try_restore_params(self):
+        """
+        显存空闲时逐步恢复被 OOM 降低的参数。
+
+        每 500 步检查一次 GPU 显存使用率：
+          - 使用率 < 60% → 尝试恢复一级参数
+          - 被标记为 unsafe 的级别跳过
+        """
+        if not torch.cuda.is_available():
+            return
+
+        try:
+            allocated = torch.cuda.memory_allocated(0)
+            total = torch.cuda.get_device_properties(0).total_memory
+            usage = allocated / total if total > 0 else 1.0
+        except Exception:
+            return
+
+        if usage > 0.65:  # 显存占用仍高，不恢复
+            return
+
+        restored_anything = False
+
+        # 恢复顺序：先恢复对显存影响最小的
+        # 1. games_per_iteration
+        if self._oom_count > 0 and self._auto_games_current < self._target_games:
+            if 'games' not in self._oom_unsafe_levels:
+                old = self._auto_games_current
+                self._auto_games_current = min(
+                    self._target_games, self._auto_games_current + 1)
+                logger.info(f"   ✅ 恢复每轮对弈局数: {old} → {self._auto_games_current}")
+                restored_anything = True
+
+        # 2. batch_size
+        if self._oom_count > 0 and self.batch_size < self._target_batch_size:
+            if 'batch' not in self._oom_unsafe_levels:
+                old = self.batch_size
+                self.batch_size = min(
+                    self._target_batch_size, self.batch_size * 2)
+                logger.info(f"   ✅ 恢复 batch_size: {old} → {self.batch_size}")
+                restored_anything = True
+
+        # 3. 数据增强
+        if not self.augmentation_enabled and self._target_augmentation:
+            if 'aug' not in self._oom_unsafe_levels:
+                self.augmentation_enabled = True
+                logger.info(f"   ✅ 恢复数据增强")
+                restored_anything = True
+
+        if restored_anything:
+            torch.cuda.empty_cache()
+            logger.info(f"   当前显存使用率: {usage*100:.0f}%")
+
     def _handle_oom(self, total_steps, games_per_iteration):
         """OOM 自动恢复：逐级降级直到显存安全"""
-        oom_count = getattr(self, '_oom_count', 0) + 1
-        self._oom_count = oom_count
+        self._oom_count += 1
+        oom_count = self._oom_count
 
         logger.warning(f"⚠️ OOM #{oom_count} at step={self.global_step}，自动降级中...")
         torch.cuda.empty_cache()
 
-        # 同步降低每轮对弈局数（减少GPU数据生成压力）
+        # 标记当前级别为 unsafe（恢复时跳过）
+        if oom_count == 1:
+            self._oom_unsafe_levels.add('batch')
+        elif oom_count == 2:
+            self._oom_unsafe_levels.add('aug')
+        elif oom_count == 3:
+            self._oom_unsafe_levels.add('batch_2')
+        elif oom_count == 4:
+            self._oom_unsafe_levels.add('network')
+
+        # 同步降低每轮对弈局数
         old_games = games_per_iteration
         if oom_count <= 2:
             games_per_iteration = max(1, games_per_iteration - 1)
