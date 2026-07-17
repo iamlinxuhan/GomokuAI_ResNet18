@@ -873,10 +873,10 @@ class TrainingPanel(QDialog):
 
         # 创建 matplotlib 图表（亮色背景配鲜艳线条）
         self.fig = Figure(figsize=(8, 4.5), dpi=100)
-        self.fig.patch.set_facecolor('#ffffff')
+        self.fig.patch.set_facecolor('#f0f0f0')
 
         chart_style = {
-            'facecolor': '#f8f9fa',
+            'facecolor': '#f5f5f5',
             'label_color': '#333333',
             'tick_color': '#666666',
             'grid_alpha': 0.2,
@@ -935,7 +935,7 @@ class TrainingPanel(QDialog):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(120)
-        self.log_text.setStyleSheet("background-color: #f8f9fa; color: #333333; font-size: 11px;")
+        self.log_text.setStyleSheet("background-color: #f0f0f0; color: #333333; font-size: 11px;")
         monitor_layout.addWidget(QLabel("训练日志:"))
         monitor_layout.addWidget(self.log_text)
 
@@ -1613,22 +1613,106 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("就绪")
 
     def _apply_dark_theme(self):
-        """应用亮色主题"""
-        light_palette = QPalette()
-        light_palette.setColor(QPalette.ColorRole.Window, QColor(245, 245, 245))
-        light_palette.setColor(QPalette.ColorRole.WindowText, QColor(50, 50, 50))
-        light_palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
-        light_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(235, 235, 235))
-        light_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 220))
-        light_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(50, 50, 50))
-        light_palette.setColor(QPalette.ColorRole.Text, QColor(50, 50, 50))
-        light_palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
-        light_palette.setColor(QPalette.ColorRole.ButtonText, QColor(50, 50, 50))
-        light_palette.setColor(QPalette.ColorRole.BrightText, QColor(200, 0, 0))
-        light_palette.setColor(QPalette.ColorRole.Link, QColor(0, 100, 200))
-        light_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        light_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-        self.setPalette(light_palette)
+        """应用柔和亮灰主题 + QSS增强按钮/边框可见性"""
+        palette = QPalette()
+        palette.setColor(QPalette.ColorRole.Window, QColor(230, 230, 230))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(40, 40, 40))
+        palette.setColor(QPalette.ColorRole.Base, QColor(248, 248, 248))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(218, 218, 218))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 200))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(40, 40, 40))
+        palette.setColor(QPalette.ColorRole.Text, QColor(40, 40, 40))
+        palette.setColor(QPalette.ColorRole.Button, QColor(235, 235, 235))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(40, 40, 40))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor(200, 0, 0))
+        palette.setColor(QPalette.ColorRole.Link, QColor(0, 100, 200))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+        self.setPalette(palette)
+        # QSS确保按钮和控件有清晰边框
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #e0e0e0;
+                border: 1px solid #b0b0b0;
+                border-radius: 4px;
+                padding: 4px 12px;
+                min-height: 22px;
+            }
+            QPushButton:hover {
+                background-color: #d0d0d0;
+                border: 1px solid #909090;
+            }
+            QPushButton:pressed {
+                background-color: #c0c0c0;
+            }
+            QGroupBox {
+                border: 1px solid #c0c0c0;
+                border-radius: 6px;
+                margin-top: 8px;
+                padding-top: 14px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 6px;
+                background-color: #e6e6e6;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid #b0b0b0;
+                height: 6px;
+                background: #d0d0d0;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #c0c0c0;
+                border: 1px solid #909090;
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #b0b0b0;
+            }
+            QComboBox {
+                background-color: #e8e8e8;
+                border: 1px solid #b0b0b0;
+                border-radius: 4px;
+                padding: 3px 8px;
+            }
+            QComboBox:hover {
+                border: 1px solid #909090;
+            }
+            QProgressBar {
+                border: 1px solid #b0b0b0;
+                border-radius: 4px;
+                text-align: center;
+                background-color: #e8e8e8;
+            }
+            QProgressBar::chunk {
+                background-color: #4a90d9;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator {
+                border: 1px solid #b0b0b0;
+                width: 14px;
+                height: 14px;
+                border-radius: 3px;
+            }
+            QListWidget {
+                background-color: #f0f0f0;
+                border: 1px solid #c0c0c0;
+                border-radius: 4px;
+            }
+            QStatusBar {
+                background-color: #dcdcdc;
+                border-top: 1px solid #c0c0c0;
+            }
+            QMenuBar {
+                background-color: #e0e0e0;
+                border-bottom: 1px solid #c0c0c0;
+            }
+        """)
 
     def _load_model(self):
         """加载模型（v2.0: 根据硬件配置创建自适应网络）"""
