@@ -620,8 +620,10 @@ class TrainingPanel(QDialog):
         self.cb_trad.setChecked(True)
         self.cb_human = QCheckBox("人机对弈 (human)")
         self.cb_human.setChecked(False)
-        # HUMAN 取消勾选时自动将权重滑条置0
-        self.cb_human.toggled.connect(self._on_human_toggled)
+        # 三个勾选框共用同一个联动处理：取消勾选时对应权重归零再分配
+        self.cb_self.toggled.connect(lambda c: self._on_mode_toggled('self', c))
+        self.cb_trad.toggled.connect(lambda c: self._on_mode_toggled('trad', c))
+        self.cb_human.toggled.connect(lambda c: self._on_mode_toggled('human', c))
         mode_layout.addWidget(self.cb_self)
         mode_layout.addWidget(self.cb_trad)
         mode_layout.addWidget(self.cb_human)
@@ -948,17 +950,25 @@ class TrainingPanel(QDialog):
         hw_net = hw_config.get('network', {})
         hw_training = hw_config.get('training', {})
 
-        # 计算实际采样权重：HUMAN 未启用时 human=0，self/trad 重分配
-        has_human = self.cb_human.isChecked()
-        w_self = self.slider_self.value() / 100.0
-        w_trad = self.slider_trad.value() / 100.0
-        w_human = self.slider_human.value() / 100.0 if has_human else 0.0
-        if not has_human and w_human > 0:
-            # 重新归一化到总和=1
-            total = w_self + w_trad
-            if total > 0:
-                w_self = w_self / total
-                w_trad = w_trad / total
+        # 计算实际采样权重：未勾选的模式权重强制归 0，已勾选的按比例重分配
+        mode_checked = {
+            'self':  self.cb_self.isChecked(),
+            'trad':  self.cb_trad.isChecked(),
+            'human': self.cb_human.isChecked(),
+        }
+        raw_weights = {
+            'self':  self.slider_self.value() / 100.0,
+            'trad':  self.slider_trad.value() / 100.0,
+            'human': self.slider_human.value() / 100.0,
+        }
+        # 未勾选的强制归零
+        checked_sum = sum(raw_weights[m] for m in mode_checked if mode_checked[m])
+        if checked_sum > 0:
+            w_self  = raw_weights['self']  / checked_sum if mode_checked['self']  else 0.0
+            w_trad  = raw_weights['trad']  / checked_sum if mode_checked['trad']  else 0.0
+            w_human = raw_weights['human'] / checked_sum if mode_checked['human'] else 0.0
+        else:
+            w_self = w_trad = w_human = 0.0
 
         config = {
             # 网络结构（硬件自适应）
@@ -1018,7 +1028,7 @@ class TrainingPanel(QDialog):
                 },
                 # 人机对弈
                 'human': {
-                    'enabled': has_human,
+                    'enabled': mode_checked['human'],
                     'temperature_for_human_moves': 0.1,
                 },
             },
@@ -1215,28 +1225,53 @@ class TrainingPanel(QDialog):
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{ts}] {msg}")
 
-    def _on_human_toggled(self, checked: bool):
-        """HUMAN 勾选切换 → 自动调整采样权重"""
+    def _on_mode_toggled(self, source: str, checked: bool):
+        """
+        训练模式勾选切换 → 自动同步对应采样权重。
+
+        三个模式（self/trad/human）共用此方法：
+          - 取消勾选 → 该模式权重置 0，释放的比例按原比例分配给其余两个
+          - 勾选     → 从其余两个按比例匀出 10 给该模式
+        """
         self._weight_adjusting = True
+
+        sliders = {'self': self.slider_self, 'trad': self.slider_trad, 'human': self.slider_human}
+        labels  = {'self': self.lbl_self,  'trad': self.lbl_trad,  'human': self.lbl_human}
+        others  = [s for s in sliders if s != source]
+
         if not checked:
-            # 取消勾选 → human=0，self/trad 平分 100
-            self.slider_human.setValue(0)
-            self.lbl_human.setText("0%")
-            self.slider_self.setValue(60)
-            self.lbl_self.setText("60%")
-            self.slider_trad.setValue(40)
-            self.lbl_trad.setText("40%")
+            # ── 取消勾选：该模式置 0，余量按比例分给其余两个 ──
+            old_val = sliders[source].value()
+            sliders[source].setValue(0)
+            labels[source].setText("0%")
+
+            if old_val > 0:
+                total_other = sum(sliders[s].value() for s in others)
+                if total_other > 0:
+                    for i, s in enumerate(others):
+                        if i < len(others) - 1:
+                            new_val = round(sliders[s].value() + old_val * (sliders[s].value() / total_other))
+                        else:
+                            new_val = 100 - sliders[others[0]].value()  # 最后一个用减法确保总和=100
+                        new_val = max(0, min(100, new_val))
+                        sliders[s].setValue(new_val)
+                        labels[s].setText(f"{new_val}%")
         else:
-            # 勾选 HUMAN → 从 self/trad 各让出 5% 给 human
-            if self.slider_human.value() == 0:
-                sv = self.slider_self.value()
-                tv = self.slider_trad.value()
-                if sv >= 10 and tv >= 5:
-                    self.slider_self.setValue(sv - 5)
-                    self.slider_trad.setValue(tv - 5)
-                    self.slider_human.setValue(10)
-                else:
-                    self.slider_human.setValue(10)
+            # ── 勾选：该模式从 0→10，其余两个等比缩减 ──
+            if sliders[source].value() == 0:
+                current_others = sum(sliders[s].value() for s in others)
+                if current_others > 0:
+                    for i, s in enumerate(others):
+                        if i < len(others) - 1:
+                            new_val = max(0, round(sliders[s].value() * 90 / current_others))
+                        else:
+                            new_val = 90 - sliders[others[0]].value()
+                        new_val = max(0, min(100, new_val))
+                        sliders[s].setValue(new_val)
+                        labels[s].setText(f"{new_val}%")
+                sliders[source].setValue(10)
+                labels[source].setText("10%")
+
         self._weight_adjusting = False
 
     def _on_weight_self_changed(self, v):
