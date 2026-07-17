@@ -873,10 +873,13 @@ class TrainingPanel(QDialog):
 
         # 创建 matplotlib 图表（亮色背景配鲜艳线条）
         self.fig = Figure(figsize=(8, 4.5), dpi=100)
-        self.fig.patch.set_facecolor('#f0f0f0')
+        self.fig.patch.set_facecolor('#3c3c3c')
 
         chart_style = {
-            'facecolor': '#f5f5f5',
+            'facecolor': '#3c3c3c',
+            'label_color': '#cccccc',
+            'tick_color': '#999999',
+            'grid_alpha': 0.15,
             'label_color': '#333333',
             'tick_color': '#666666',
             'grid_alpha': 0.2,
@@ -935,7 +938,7 @@ class TrainingPanel(QDialog):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMaximumHeight(120)
-        self.log_text.setStyleSheet("background-color: #f0f0f0; color: #333333; font-size: 11px;")
+        self.log_text.setStyleSheet("background-color: #3a3a3a; color: #d0d0d0; font-size: 11px;")
         monitor_layout.addWidget(QLabel("训练日志:"))
         monitor_layout.addWidget(self.log_text)
 
@@ -1178,7 +1181,7 @@ class TrainingPanel(QDialog):
         """在空图表上添加'等待中'提示文字"""
         ax.text(0.5, 0.5, '等待训练数据...',
                 transform=ax.transAxes, ha='center', va='center',
-                fontsize=10, color='#adb5bd', style='italic')
+                fontsize=10, color='#888888', style='italic')
 
     def _update_charts(self, status: dict):
         """更新图表数据（v2.0: 即使无训练数据也显示等待提示）"""
@@ -1569,7 +1572,7 @@ class MainWindow(QMainWindow):
         gpu_name_short = _HW_SUMMARY.get('gpu', {}).get('name', 'CPU')
         self.lbl_gpu_status = QLabel(
             f"🧠 {gpu_status} | {gpu_name_short} ({gpu_mem}MB)")
-        self.lbl_gpu_status.setStyleSheet("color: #666; font-size: 10px; padding: 4px;")
+        self.lbl_gpu_status.setStyleSheet("color: #aaa; font-size: 10px; padding: 4px;")
         right_layout.addWidget(self.lbl_gpu_status)
 
         # 控制按钮
@@ -1613,104 +1616,175 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("就绪")
 
     def _apply_dark_theme(self):
-        """应用柔和亮灰主题 + QSS增强按钮/边框可见性"""
+        """应用深灰主题 + 高对比度控件"""
         palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(230, 230, 230))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(40, 40, 40))
-        palette.setColor(QPalette.ColorRole.Base, QColor(248, 248, 248))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(218, 218, 218))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 200))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(40, 40, 40))
-        palette.setColor(QPalette.ColorRole.Text, QColor(40, 40, 40))
-        palette.setColor(QPalette.ColorRole.Button, QColor(235, 235, 235))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(40, 40, 40))
-        palette.setColor(QPalette.ColorRole.BrightText, QColor(200, 0, 0))
-        palette.setColor(QPalette.ColorRole.Link, QColor(0, 100, 200))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.ColorRole.Window, QColor(60, 60, 60))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Base, QColor(75, 75, 75))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(90, 90, 90))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(50, 50, 50))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+        palette.setColor(QPalette.ColorRole.Button, QColor(30, 30, 30))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(230, 230, 230))
+        palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 80, 80))
+        palette.setColor(QPalette.ColorRole.Link, QColor(80, 160, 255))
+        palette.setColor(QPalette.ColorRole.Highlight, QColor(60, 140, 230))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
         self.setPalette(palette)
-        # QSS确保按钮和控件有清晰边框
+        # 黑色按钮 + 高对比度边框
         self.setStyleSheet("""
             QPushButton {
-                background-color: #e0e0e0;
-                border: 1px solid #b0b0b0;
+                background-color: #1a1a1a;
+                color: #e0e0e0;
+                border: 2px solid #555555;
                 border-radius: 4px;
-                padding: 4px 12px;
-                min-height: 22px;
+                padding: 5px 14px;
+                min-height: 24px;
+                font-weight: bold;
             }
             QPushButton:hover {
-                background-color: #d0d0d0;
-                border: 1px solid #909090;
+                background-color: #333333;
+                border: 2px solid #888888;
             }
             QPushButton:pressed {
-                background-color: #c0c0c0;
+                background-color: #000000;
+                border: 2px solid #aaaaaa;
+            }
+            QPushButton:disabled {
+                background-color: #3a3a3a;
+                color: #888888;
+                border: 2px solid #444444;
             }
             QGroupBox {
-                border: 1px solid #c0c0c0;
+                border: 2px solid #666666;
                 border-radius: 6px;
-                margin-top: 8px;
-                padding-top: 14px;
+                margin-top: 10px;
+                padding-top: 16px;
                 font-weight: bold;
+                color: #d0d0d0;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 6px;
-                background-color: #e6e6e6;
+                padding: 0 8px;
+                background-color: #3c3c3c;
             }
             QSlider::groove:horizontal {
-                border: 1px solid #b0b0b0;
-                height: 6px;
-                background: #d0d0d0;
-                border-radius: 3px;
+                border: 1px solid #666666;
+                height: 8px;
+                background: #4a4a4a;
+                border-radius: 4px;
             }
             QSlider::handle:horizontal {
-                background: #c0c0c0;
-                border: 1px solid #909090;
-                width: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
+                background: #1a1a1a;
+                border: 2px solid #888888;
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
             }
             QSlider::handle:horizontal:hover {
-                background: #b0b0b0;
+                background: #333333;
+                border: 2px solid #aaaaaa;
             }
             QComboBox {
-                background-color: #e8e8e8;
-                border: 1px solid #b0b0b0;
+                background-color: #2a2a2a;
+                color: #e0e0e0;
+                border: 2px solid #555555;
                 border-radius: 4px;
-                padding: 3px 8px;
+                padding: 4px 10px;
+                min-height: 24px;
             }
             QComboBox:hover {
-                border: 1px solid #909090;
+                border: 2px solid #888888;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
             }
             QProgressBar {
-                border: 1px solid #b0b0b0;
+                border: 2px solid #555555;
                 border-radius: 4px;
                 text-align: center;
-                background-color: #e8e8e8;
+                background-color: #3a3a3a;
+                color: #e0e0e0;
+                min-height: 18px;
             }
             QProgressBar::chunk {
                 background-color: #4a90d9;
                 border-radius: 3px;
             }
+            QCheckBox {
+                color: #d0d0d0;
+                spacing: 6px;
+            }
             QCheckBox::indicator {
-                border: 1px solid #b0b0b0;
-                width: 14px;
-                height: 14px;
+                border: 2px solid #666666;
+                width: 16px;
+                height: 16px;
                 border-radius: 3px;
+                background-color: #3a3a3a;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4a90d9;
+                border: 2px solid #6ab0ff;
+            }
+            QCheckBox::indicator:hover {
+                border: 2px solid #999999;
             }
             QListWidget {
-                background-color: #f0f0f0;
-                border: 1px solid #c0c0c0;
+                background-color: #3a3a3a;
+                color: #d0d0d0;
+                border: 2px solid #555555;
                 border-radius: 4px;
             }
             QStatusBar {
-                background-color: #dcdcdc;
-                border-top: 1px solid #c0c0c0;
+                background-color: #2a2a2a;
+                color: #b0b0b0;
+                border-top: 2px solid #555555;
             }
             QMenuBar {
-                background-color: #e0e0e0;
-                border-bottom: 1px solid #c0c0c0;
+                background-color: #2a2a2a;
+                color: #d0d0d0;
+                border-bottom: 2px solid #555555;
+            }
+            QMenuBar::item:selected {
+                background-color: #4a4a4a;
+            }
+            QLabel {
+                color: #d0d0d0;
+            }
+            QTabWidget::pane {
+                border: 2px solid #555555;
+                background-color: #3c3c3c;
+            }
+            QTabBar::tab {
+                background-color: #2a2a2a;
+                color: #b0b0b0;
+                border: 1px solid #555555;
+                padding: 6px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #4a4a4a;
+                color: #ffffff;
+                border-bottom: 2px solid #4a90d9;
+            }
+            QTabBar::tab:hover {
+                background-color: #3a3a3a;
+            }
+            QTextEdit {
+                background-color: #3a3a3a;
+                color: #d0d0d0;
+                border: 2px solid #555555;
+                border-radius: 4px;
+            }
+            QSpinBox, QDoubleSpinBox {
+                background-color: #2a2a2a;
+                color: #e0e0e0;
+                border: 2px solid #555555;
+                border-radius: 4px;
+                padding: 2px 6px;
             }
         """)
 
