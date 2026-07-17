@@ -1437,9 +1437,13 @@ class Trainer:
                     time.sleep(1)
                     continue
 
-                # ── 获取智能调控参数 ──
+                # ── 获取智能调控参数（自动调参优先于初始传入值） ──
                 ap = self.auto_params.get_params()
-                auto_games = games_per_iteration if games_per_iteration is not None else ap.games_per_iteration
+                if games_per_iteration is not None:
+                    # 初始传入值作为上限，自动调参可根据经验池状况取更小值
+                    auto_games = min(games_per_iteration, ap.games_per_iteration)
+                else:
+                    auto_games = ap.games_per_iteration
 
                 # ── 生成训练数据 ──
                 if 'self' in self.modes:
