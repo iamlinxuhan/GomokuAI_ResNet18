@@ -1588,6 +1588,15 @@ class Trainer:
         logger.warning(f"⚠️ OOM #{oom_count} at step={self.global_step}，自动降级中...")
         torch.cuda.empty_cache()
 
+        # 同步降低每轮对弈局数（减少GPU数据生成压力）
+        old_games = games_per_iteration
+        if oom_count <= 2:
+            games_per_iteration = max(1, games_per_iteration - 1)
+        else:
+            games_per_iteration = 1
+        if old_games != games_per_iteration:
+            logger.info(f"   每轮对弈局数: {old_games} → {games_per_iteration}")
+
         if oom_count == 1:
             # 第一级：batch_size 砍半
             old_bs = self.batch_size
