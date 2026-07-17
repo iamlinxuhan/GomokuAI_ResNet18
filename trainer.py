@@ -773,14 +773,16 @@ class AutoParameterController:
         self._adjust_puct()
 
         # ── 7. 每轮对弈局数 ──
-        if buffer_size < 10000:
-            self.games_per_iteration = 10
+        if buffer_size < 1000:
+            self.games_per_iteration = 1   # 经验池极小：先跑1局，快速出训练数据
+        elif buffer_size < 10000:
+            self.games_per_iteration = 2   # 经验池小：少生成多训练
         elif buffer_size > 200000:
             self.games_per_iteration = 2
         elif buffer_size > 100000:
             self.games_per_iteration = 3
         else:
-            self.games_per_iteration = 5
+            self.games_per_iteration = 4
 
         # ── 8. 停滞检测：如果 loss 长时间不下降，临时增加探索 ──
         self._detect_stagnation()
@@ -1282,6 +1284,33 @@ class Trainer:
             'learning_rate': self.optimizer.param_groups[0]['lr'],
         }
 
+    def _train_immediately(self, min_samples: int = 64):
+        """
+        立即执行若干训练步（边生成数据边训练，确保图表及时更新）。
+
+        与 _train_step 不同，此方法：
+          - 自动决定训练步数（根据经验池大小）
+          - 记录 loss 到 history
+          - 保存最后 loss 供 auto_params.update 使用
+        """
+        buf_size = len(self.replay_buffer)
+        if buf_size < min_samples:
+            return
+
+        # 根据经验池大小决定训练步数：刚起步时少训练，池子大了多训练
+        if buf_size < self.batch_size:
+            steps = 1
+        else:
+            steps = min(5, buf_size // min_samples)
+
+        for _ in range(steps):
+            if not self.running:
+                break
+            loss_info = self._train_step()
+            if loss_info:
+                self.loss_history.append({**loss_info, 'step': self.global_step})
+                self._last_loss_info = loss_info
+
     def _evaluate_models(self, num_games: int = 50) -> Dict[str, float]:
         """评估当前模型 vs 最佳模型"""
         wins = 0
@@ -1445,55 +1474,46 @@ class Trainer:
                 else:
                     auto_games = ap.games_per_iteration
 
-                # ── 生成训练数据 ──
+                # ── 生成训练数据 + 立即训练（边生成边训练，图表实时更新） ──
+                min_train = 64
+
                 if 'self' in self.modes:
                     self._generate_self_play_data(auto_games)
+                    self._train_immediately(min_train)
+
                 if 'trad' in self.modes:
                     self._generate_traditional_data(auto_games)
+                    self._train_immediately(min_train)
 
-                # ── 训练步骤 ──
-                loss_info = {}
-                min_train = 64
-                if len(self.replay_buffer) >= min_train:
-                    # 根据经验池大小调整每轮训练步数
-                    buffer_ratio = min(1.0, len(self.replay_buffer) / (self.batch_size * 2))
-                    steps_this_round = max(1, int(20 * buffer_ratio))
+                # ── 智能参数更新 ──
+                self.auto_params.update(
+                    global_step=self.global_step,
+                    total_steps=total_steps,
+                    loss_info=getattr(self, '_last_loss_info', {}),
+                    win_rate=self.adjuster.get_win_rate(),
+                    buffer_size=len(self.replay_buffer),
+                )
 
-                    for _ in range(steps_this_round):
-                        if not self.running:
-                            break
-                        loss_info = self._train_step()
-                        if loss_info:
-                            self.loss_history.append({**loss_info, 'step': self.global_step})
-
-                    # ── 智能参数更新 ──
-                    self.auto_params.update(
-                        global_step=self.global_step,
-                        total_steps=total_steps,
-                        loss_info=loss_info,
-                        win_rate=self.adjuster.get_win_rate(),
-                        buffer_size=len(self.replay_buffer),
+                # ── 进度日志 ──
+                if self.global_step % 100 == 0:
+                    buf_stats = self.replay_buffer.get_stats()
+                    ap_summary = self.auto_params.get_summary()
+                    li = getattr(self, '_last_loss_info', {})
+                    logger.info(
+                        f"步 {self.global_step}/{total_steps} | "
+                        f"Loss: {li.get('total_loss', 0):.4f} | "
+                        f"Buffer: {buf_stats['total']} | "
+                        f"LR: {li.get('learning_rate', 0):.6f}"
                     )
-
-                    # 每 100 步输出进度
-                    if self.global_step % 100 == 0:
-                        buf_stats = self.replay_buffer.get_stats()
-                        ap_summary = self.auto_params.get_summary()
-                        logger.info(
-                            f"步 {self.global_step}/{total_steps} | "
-                            f"Loss: {loss_info.get('total_loss', 0):.4f} | "
-                            f"Buffer: {buf_stats['total']} | "
-                            f"LR: {loss_info.get('learning_rate', 0):.6f}"
-                        )
-                        logger.info(
-                            f"  自动: phase={ap_summary['phase']} | "
-                            f"MCTS={ap_summary['mcts_simulations']} | "
-                            f"温度={ap_summary['temperature']:.3f} | "
-                            f"噪声={ap_summary['dirichlet_epsilon']:.3f} | "
-                            f"PUCT={ap_summary['c_puct']:.2f} | "
-                            f"局/轮={ap_summary['games_per_iteration']} | "
-                            f"传统AI深度={self.adjuster.current_depth}"
-                        )
+                    logger.info(
+                        f"  自动: phase={ap_summary['phase']} | "
+                        f"MCTS={ap_summary['mcts_simulations']} | "
+                        f"温度={ap_summary['temperature']:.3f} | "
+                        f"噪声={ap_summary['dirichlet_epsilon']:.3f} | "
+                        f"PUCT={ap_summary['c_puct']:.2f} | "
+                        f"局/轮={ap_summary['games_per_iteration']} | "
+                        f"传统AI深度={self.adjuster.current_depth}"
+                    )
 
                 # ── 定期评估 ──
                 if self.global_step > 0 and self.global_step % self.eval_interval_steps == 0:

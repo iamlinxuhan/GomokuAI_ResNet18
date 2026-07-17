@@ -1154,12 +1154,12 @@ class TrainingPanel(QDialog):
         ax.grid(True, alpha=0.15, linestyle='-')
 
     def _update_charts(self, status: dict):
-        """更新图表数据"""
+        """更新图表数据（v2.0: 即使无训练数据也显示当前状态）"""
         loss_hist = status.get('loss_history', [])
         wr_hist = status.get('win_rate_history', [])
 
-        # ── 损失曲线 ──
-        if len(loss_hist) >= 2:
+        # ── 损失曲线（1个点也显示，不再等2个） ──
+        if loss_hist:
             steps = [h.get('step', 0) for h in loss_hist]
             totals = [h.get('total_loss', 0) for h in loss_hist]
             policies = [h.get('policy_loss', 0) for h in loss_hist]
@@ -1169,12 +1169,16 @@ class TrainingPanel(QDialog):
             self.line_value.set_data(steps, values)
             self.ax_loss.relim()
             self.ax_loss.autoscale_view()
-            # 只显示最近 200 步的细节
             if len(steps) > 200:
                 self.ax_loss.set_xlim(steps[-200], steps[-1])
+        else:
+            # 无训练数据时清空曲线
+            self.line_total.set_data([], [])
+            self.line_policy.set_data([], [])
+            self.line_value.set_data([], [])
 
-        # ── 胜率曲线 ──
-        if len(wr_hist) >= 2:
+        # ── 胜率曲线（1个点也显示） ──
+        if wr_hist:
             idx = list(range(len(wr_hist)))
             win_rates = []
             for h in wr_hist:
@@ -1187,34 +1191,39 @@ class TrainingPanel(QDialog):
             self.line_wr.set_data(idx, win_rates)
             self.ax_wr.relim()
             self.ax_wr.autoscale_view()
+        else:
+            self.line_wr.set_data([], [])
 
-        # ── 自动参数趋势（MCTS + 温度） ──
+        # ── 自动参数趋势（MCTS + 温度）—— 无loss_hist时显示当前值 ──
         ap = status.get('auto_params', {})
         if ap:
-            # 从 loss_history 中提取时间线上的 MCTS 值（每100步采样）
-            param_steps = []
-            mcts_vals = []
-            temp_vals = []
-            for h in loss_hist[::20]:  # 每20步采一个点
-                param_steps.append(h.get('step', 0))
-                # 从 status 获取最新 auto_params（简化：所有点用当前值）
-                mcts_vals.append(ap.get('mcts_simulations', 200))
-                temp_vals.append(ap.get('temperature', 1.0))
+            if loss_hist:
+                param_steps = [h.get('step', 0) for h in loss_hist[::20]]
+            else:
+                param_steps = [0]  # 训练前的初始状态
+            mcts_vals = [ap.get('mcts_simulations', 50)] * len(param_steps)
+            temp_vals = [ap.get('temperature', 1.5)] * len(param_steps)
 
-            if param_steps:
-                self.line_mcts.set_data(param_steps, mcts_vals)
-                self.line_temp.set_data(param_steps, temp_vals)
-                self.ax_mcts.relim()
-                self.ax_mcts.autoscale_view()
+            self.line_mcts.set_data(param_steps, mcts_vals)
+            self.line_temp.set_data(param_steps, temp_vals)
+            self.ax_mcts.relim()
+            self.ax_mcts.autoscale_view()
+        else:
+            self.line_mcts.set_data([], [])
+            self.line_temp.set_data([], [])
 
         # ── 学习率 ──
-        if len(loss_hist) >= 2:
+        if loss_hist:
             lr_steps = [h.get('step', 0) for h in loss_hist]
             lr_vals = [h.get('learning_rate', 0) for h in loss_hist]
             if any(lr_vals):
                 self.line_lr.set_data(lr_steps, lr_vals)
-                self.ax_lr.relim()
-                self.ax_lr.autoscale_view()
+            else:
+                self.line_lr.set_data([], [])
+            self.ax_lr.relim()
+            self.ax_lr.autoscale_view()
+        else:
+            self.line_lr.set_data([], [])
 
         # 刷新画布
         self.chart_canvas.draw_idle()
