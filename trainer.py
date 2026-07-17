@@ -440,13 +440,13 @@ class TraditionalOpponentWorker:
         logger.info(f"TraditionalOpponentWorker: depth={trad_depth}, "
                     f"MCTS={mcts_simulations}, training_mode=True")
 
-    def play_game(self, nn_as_black: bool = True) -> List[Tuple[np.ndarray, np.ndarray, float, str]]:
+    def play_game(self, nn_as_black: bool = False) -> List[Tuple[np.ndarray, np.ndarray, float, str]]:
         """
         进行一局神经网络 vs 传统AI对弈。
         v2.0: 传统AI使用CPU快速搜索，神经网络使用MCTS。
 
         Args:
-            nn_as_black: 神经网络是否执黑
+            nn_as_black: 神经网络是否执黑（默认False=传统AI执黑先手）
         Returns:
             List of (state, policy_target, value_target, source)
         """
@@ -685,7 +685,7 @@ class AutoParameterController:
         self.recent_win_rates: deque = deque(maxlen=50)
         self.loss_stable_count = 0
         self.last_mcts_adjust_step = 0
-        self.mcts_adjust_cooldown = 2000
+        self.mcts_adjust_cooldown = 500  # 每500步调整一次MCTS（原2000太大）
 
         # v2.0 新追踪指标
         self.recent_value_losses: deque = deque(maxlen=200)
@@ -1005,7 +1005,7 @@ class Trainer:
         self.adjuster = AutoDifficultyAdjuster(
             initial_depth=self.trad_depth,
             depth_range=tuple(trad_cfg.get('depth_range', [1, 8])),
-            games_per_adjust=trad_cfg.get('games_per_adjust', 10),
+            games_per_adjust=trad_cfg.get('games_per_adjust', 5),  # 每5局就检查胜率调深度
             target_win_rate=trad_cfg.get('target_win_rate', 0.20),
             win_rate_window=trad_cfg.get('win_rate_window', 100),
         )
@@ -1091,32 +1091,43 @@ class Trainer:
                 logger.warning(f"训练状态加载失败: {e}")
 
     def _save_checkpoint(self):
-        """保存模型和训练状态"""
+        """安全保存模型和训练状态（先写临时文件再覆盖，防止OOM导致文件损坏）"""
+        # 保存模型
         model_path = os.path.join(self.model_dir, 'model.pt')
+        model_tmp = model_path + '.tmp'
         self.model.save_checkpoint(
-            model_path,
+            model_tmp,
             step=self.global_step,
             extra={'elo': self.elo_system.get_elo('current')}
         )
+        os.replace(model_tmp, model_path)  # 原子覆盖
 
+        # 保存训练状态
         state_path = os.path.join(self.model_dir, 'training_state.pt')
-        torch.save({
-            'step': self.global_step,
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'total_games_self': self.total_games_self,
-            'total_games_trad': self.total_games_trad,
-            'total_games_human': self.total_games_human,
-            'total_nn_wins': self.total_nn_wins,
-            'auto_params': {
-                'mcts_simulations': self.auto_params.mcts_simulations,
-                'temperature': self.auto_params.temperature,
-                'dirichlet_epsilon': self.auto_params.dirichlet_epsilon,
-                'c_puct': self.auto_params.c_puct,
-                'games_per_iteration': self.auto_params.games_per_iteration,
-            },
-            'elo_current': self.elo_system.get_elo('current'),
-            'elo_best': self.elo_system.get_elo('best'),
-        }, state_path)
+        state_tmp = state_path + '.tmp'
+        try:
+            torch.save({
+                'step': self.global_step,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'total_games_self': self.total_games_self,
+                'total_games_trad': self.total_games_trad,
+                'total_games_human': self.total_games_human,
+                'total_nn_wins': self.total_nn_wins,
+                'auto_params': {
+                    'mcts_simulations': self.auto_params.mcts_simulations,
+                    'temperature': self.auto_params.temperature,
+                    'dirichlet_epsilon': self.auto_params.dirichlet_epsilon,
+                    'c_puct': self.auto_params.c_puct,
+                    'games_per_iteration': self.auto_params.games_per_iteration,
+                },
+                'elo_current': self.elo_system.get_elo('current'),
+                'elo_best': self.elo_system.get_elo('best'),
+            }, state_tmp)
+            os.replace(state_tmp, state_path)
+        except Exception:
+            # 状态文件不重要，保存失败不影响继续训练
+            if os.path.exists(state_tmp):
+                os.remove(state_tmp)
 
     def _generate_self_play_data(self, num_games: int = 1):
         """生成自我对弈数据（使用智能调控参数）"""
@@ -1153,8 +1164,8 @@ class Trainer:
         for i in range(num_games):
             if not self.running or self.paused:
                 break
-            nn_as_black = (i % 2 == 0)
-            data = worker.play_game(nn_as_black=nn_as_black)
+            # 传统AI始终执黑先手（走天元），引导神经网络学习中盘应对
+            data = worker.play_game(nn_as_black=False)
             self.replay_buffer.add_batch(data)
             self.total_games_trad += 1
 
@@ -1358,7 +1369,8 @@ class Trainer:
         total_time = 0.0
 
         for i in range(num_games):
-            nn_as_black = (i % 2 == 0)
+            # 评估时传统AI执黑先手
+            nn_as_black = False
 
             # 评估时：传统AI使用GPU全力搜索（不开启training_mode）
             eval_trad_ai = TraditionalAI(
@@ -1555,6 +1567,19 @@ class Trainer:
 
         except KeyboardInterrupt:
             logger.info("训练被用户中断")
+        except RuntimeError as e:
+            if 'out of memory' in str(e).lower():
+                logger.warning(f"显存溢出(OOM) at step={self.global_step}，自动恢复...")
+                torch.cuda.empty_cache()
+                # 降低 batch_size 到一半
+                self.batch_size = max(16, self.batch_size // 2)
+                logger.info(f"batch_size 降为 {self.batch_size}，继续训练")
+                # 不清空经验池，继续训练
+                self.running = True
+                self.train_loop(total_steps=total_steps,
+                                games_per_iteration=games_per_iteration)
+            else:
+                logger.error(f"训练错误 (step={self.global_step}): {e}", exc_info=True)
         except Exception as e:
             logger.error(f"训练错误 (step={self.global_step}): {e}", exc_info=True)
         finally:
