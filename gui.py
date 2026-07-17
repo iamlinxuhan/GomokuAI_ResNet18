@@ -863,49 +863,67 @@ class TrainingPanel(QDialog):
         info_bar.addStretch()
         monitor_layout.addLayout(info_bar)
 
-        # 图表区域（3个子图：损失、胜率、自动参数）
+        # 图表区域（2×2 子图：损失、胜率、自动参数、学习率）
         self.chart_widget = QWidget()
+        self.chart_widget.setMinimumHeight(300)
+        self.chart_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.chart_layout = QVBoxLayout(self.chart_widget)
         self.chart_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 创建 matplotlib 图表
+        # 创建 matplotlib 图表（浅色坐标轴，深色背景便于嵌入深色主题）
         self.fig = Figure(figsize=(8, 4.5), dpi=100)
-        self.fig.patch.set_facecolor('#2b2b2b')  # 深色背景
+        self.fig.patch.set_facecolor('#1e1e1e')
+
+        # 四个子图共享浅色主题
+        chart_style = {
+            'facecolor': '#1e1e1e',
+            'label_color': '#cccccc',
+            'tick_color': '#999999',
+            'grid_alpha': 0.12,
+        }
 
         # 损失曲线 (左上)
         self.ax_loss = self.fig.add_subplot(2, 2, 1)
-        self._style_ax(self.ax_loss, '损失曲线', '步数', '损失')
-        self.line_total, = self.ax_loss.plot([], [], 'r-', lw=1.5, label='总损失')
-        self.line_policy, = self.ax_loss.plot([], [], 'g-', lw=0.8, alpha=0.7, label='策略')
-        self.line_value, = self.ax_loss.plot([], [], 'b-', lw=0.8, alpha=0.7, label='价值')
-        self.ax_loss.legend(fontsize=7, loc='upper right')
+        self._style_ax(self.ax_loss, '损失曲线', '步数', '损失', chart_style)
+        self.line_total, = self.ax_loss.plot([], [], '#ff6b6b', lw=1.5, label='总损失')
+        self.line_policy, = self.ax_loss.plot([], [], '#51cf66', lw=0.8, alpha=0.7, label='策略')
+        self.line_value, = self.ax_loss.plot([], [], '#339af0', lw=0.8, alpha=0.7, label='价值')
+        self.ax_loss.legend(fontsize=7, loc='upper right', labelcolor='#cccccc')
+        self._add_waiting_text(self.ax_loss)
 
         # 胜率曲线 (右上)
         self.ax_wr = self.fig.add_subplot(2, 2, 2)
-        self._style_ax(self.ax_wr, 'NN vs 传统AI 胜率', '局数', '胜率')
-        self.line_wr, = self.ax_wr.plot([], [], 'c-', lw=1.5)
-        self.ax_wr.axhline(0.20, color='y', ls='--', lw=0.8, alpha=0.5, label='目标')
-        self.ax_wr.set_ylim(0, 1.0)
-        self.ax_wr.legend(fontsize=7, loc='upper left')
+        self._style_ax(self.ax_wr, 'NN vs 传统AI 胜率', '局数', '胜率', chart_style)
+        self.line_wr, = self.ax_wr.plot([], [], '#20c997', lw=1.5)
+        self.ax_wr.axhline(0.20, color='#ffd43b', ls='--', lw=0.8, alpha=0.5, label='目标20%')
+        self.ax_wr.set_ylim(-0.05, 1.05)
+        self.ax_wr.legend(fontsize=7, loc='upper left', labelcolor='#cccccc')
+        self._add_waiting_text(self.ax_wr)
 
         # MCTS/温度曲线 (左下)
         self.ax_mcts = self.fig.add_subplot(2, 2, 3)
-        self._style_ax(self.ax_mcts, '自动参数趋势', '步数', 'MCTS模拟')
-        self.line_mcts, = self.ax_mcts.plot([], [], 'm-', lw=1.5, label='MCTS')
+        self._style_ax(self.ax_mcts, '自动参数趋势', '步数', 'MCTS模拟', chart_style)
+        self.line_mcts, = self.ax_mcts.plot([], [], '#e599f7', lw=1.5, label='MCTS')
         self.ax_mcts_twin = self.ax_mcts.twinx()
-        self.ax_mcts_twin.set_ylabel('温度', color='orange', fontsize=8)
-        self.line_temp, = self.ax_mcts_twin.plot([], [], 'orange', lw=1, label='温度')
-        self.ax_mcts.legend(fontsize=7, loc='upper left')
+        self.ax_mcts_twin.set_ylabel('温度', color='#ff922b', fontsize=8)
+        self.ax_mcts_twin.tick_params(colors='#ff922b', labelsize=7)
+        self.line_temp, = self.ax_mcts_twin.plot([], [], '#ff922b', lw=1, label='温度')
+        self.ax_mcts.legend(fontsize=7, loc='upper left', labelcolor='#cccccc')
+        self._add_waiting_text(self.ax_mcts)
 
         # 学习率 (右下)
         self.ax_lr = self.fig.add_subplot(2, 2, 4)
-        self._style_ax(self.ax_lr, '学习率', '步数', 'LR')
-        self.line_lr, = self.ax_lr.plot([], [], 'w-', lw=1.5)
+        self._style_ax(self.ax_lr, '学习率', '步数', 'LR', chart_style)
+        self.line_lr, = self.ax_lr.plot([], [], '#74c0fc', lw=1.5)
+        self._add_waiting_text(self.ax_lr)
 
         self.fig.tight_layout(pad=1.5)
 
         self.chart_canvas = FigureCanvas(self.fig)
         self.chart_canvas.setMinimumHeight(280)
+        self.chart_canvas.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.chart_layout.addWidget(self.chart_canvas)
         monitor_layout.addWidget(self.chart_widget, stretch=1)
 
@@ -1140,26 +1158,37 @@ class TrainingPanel(QDialog):
         self._update_charts(status)
 
     @staticmethod
-    def _style_ax(ax, title, xlabel, ylabel):
+    def _style_ax(ax, title, xlabel, ylabel, style=None):
         """给图表坐标轴设置深色主题样式"""
-        ax.set_facecolor('#2b2b2b')
-        ax.spines['bottom'].set_color('#555')
-        ax.spines['top'].set_color('#555')
-        ax.spines['left'].set_color('#555')
-        ax.spines['right'].set_color('#555')
-        ax.tick_params(colors='#aaa', labelsize=7)
-        ax.set_title(title, color='#ddd', fontsize=9)
-        ax.set_xlabel(xlabel, color='#aaa', fontsize=7)
-        ax.set_ylabel(ylabel, color='#aaa', fontsize=7)
-        ax.grid(True, alpha=0.15, linestyle='-')
+        if style is None:
+            style = {'facecolor': '#1e1e1e', 'label_color': '#cccccc',
+                     'tick_color': '#999999', 'grid_alpha': 0.12}
+        ax.set_facecolor(style['facecolor'])
+        ax.spines['bottom'].set_color(style.get('tick_color', '#555'))
+        ax.spines['top'].set_color(style.get('tick_color', '#555'))
+        ax.spines['left'].set_color(style.get('tick_color', '#555'))
+        ax.spines['right'].set_color(style.get('tick_color', '#555'))
+        ax.tick_params(colors=style.get('tick_color', '#aaa'), labelsize=7)
+        ax.set_title(title, color=style.get('label_color', '#ddd'), fontsize=9)
+        ax.set_xlabel(xlabel, color=style.get('label_color', '#aaa'), fontsize=7)
+        ax.set_ylabel(ylabel, color=style.get('label_color', '#aaa'), fontsize=7)
+        ax.grid(True, alpha=style.get('grid_alpha', 0.15), linestyle='-')
+
+    @staticmethod
+    def _add_waiting_text(ax):
+        """在空图表上添加'等待中'提示文字"""
+        ax.text(0.5, 0.5, '等待训练数据...',
+                transform=ax.transAxes, ha='center', va='center',
+                fontsize=10, color='#666666', style='italic')
 
     def _update_charts(self, status: dict):
-        """更新图表数据（v2.0: 即使无训练数据也显示当前状态）"""
+        """更新图表数据（v2.0: 即使无训练数据也显示等待提示）"""
         loss_hist = status.get('loss_history', [])
         wr_hist = status.get('win_rate_history', [])
 
         # ── 损失曲线（1个点也显示，不再等2个） ──
         if loss_hist:
+            self._clear_waiting_text(self.ax_loss)
             steps = [h.get('step', 0) for h in loss_hist]
             totals = [h.get('total_loss', 0) for h in loss_hist]
             policies = [h.get('policy_loss', 0) for h in loss_hist]
@@ -1172,38 +1201,34 @@ class TrainingPanel(QDialog):
             if len(steps) > 200:
                 self.ax_loss.set_xlim(steps[-200], steps[-1])
         else:
-            # 无训练数据时清空曲线
             self.line_total.set_data([], [])
             self.line_policy.set_data([], [])
             self.line_value.set_data([], [])
 
-        # ── 胜率曲线（1个点也显示） ──
+        # ── 胜率曲线 ──
         if wr_hist:
+            self._clear_waiting_text(self.ax_wr)
             idx = list(range(len(wr_hist)))
             win_rates = []
             for h in wr_hist:
-                if 'win_rate' in h:
-                    win_rates.append(h['win_rate'])
-                elif 'nn_win_rate' in h:
-                    win_rates.append(h['nn_win_rate'])
-                else:
-                    win_rates.append(0.5)
+                wr = h.get('win_rate') or h.get('nn_win_rate', 0.5)
+                win_rates.append(wr)
             self.line_wr.set_data(idx, win_rates)
             self.ax_wr.relim()
             self.ax_wr.autoscale_view()
         else:
             self.line_wr.set_data([], [])
 
-        # ── 自动参数趋势（MCTS + 温度）—— 无loss_hist时显示当前值 ──
+        # ── 自动参数趋势（MCTS + 温度） ──
         ap = status.get('auto_params', {})
         if ap:
+            self._clear_waiting_text(self.ax_mcts)
             if loss_hist:
                 param_steps = [h.get('step', 0) for h in loss_hist[::20]]
             else:
-                param_steps = [0]  # 训练前的初始状态
+                param_steps = [0]
             mcts_vals = [ap.get('mcts_simulations', 50)] * len(param_steps)
             temp_vals = [ap.get('temperature', 1.5)] * len(param_steps)
-
             self.line_mcts.set_data(param_steps, mcts_vals)
             self.line_temp.set_data(param_steps, temp_vals)
             self.ax_mcts.relim()
@@ -1214,6 +1239,7 @@ class TrainingPanel(QDialog):
 
         # ── 学习率 ──
         if loss_hist:
+            self._clear_waiting_text(self.ax_lr)
             lr_steps = [h.get('step', 0) for h in loss_hist]
             lr_vals = [h.get('learning_rate', 0) for h in loss_hist]
             if any(lr_vals):
@@ -1227,6 +1253,13 @@ class TrainingPanel(QDialog):
 
         # 刷新画布
         self.chart_canvas.draw_idle()
+
+    @staticmethod
+    def _clear_waiting_text(ax):
+        """清除图表上的'等待中'提示文字"""
+        for txt in ax.texts:
+            if '等待训练数据' in txt.get_text():
+                txt.remove()
 
     def _append_log(self, msg: str):
         """添加日志"""
