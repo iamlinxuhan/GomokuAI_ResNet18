@@ -662,7 +662,8 @@ class AutoParameterController:
                  mcts_range: Tuple[int, int] = (100, 800),
                  initial_temperature: float = 1.5,
                  temperature_min: float = 0.1,
-                 hardware_config: dict = None):
+                 hardware_config: dict = None,
+                 eval_interval_games: int = 100):
         # 如果提供了硬件配置，使用硬件推荐值
         if hardware_config:
             training_cfg = hardware_config.get('training', {})
@@ -685,7 +686,8 @@ class AutoParameterController:
         self.recent_win_rates: deque = deque(maxlen=50)
         self.loss_stable_count = 0
         self.last_mcts_adjust_step = 0
-        self.mcts_adjust_cooldown = 2000
+        # MCTS 调整冷却步数 = 自动调参评估局数 × 20（让MCTS随用户设定的评估节奏调整）
+        self.mcts_adjust_cooldown = max(100, eval_interval_games * 20)
 
         # v2.0 新追踪指标
         self.recent_value_losses: deque = deque(maxlen=200)
@@ -1011,6 +1013,7 @@ class Trainer:
             initial_temperature=1.5,
             temperature_min=0.1,
             hardware_config=config,
+            eval_interval_games=self.auto_eval_games,
         )
 
         # ── 训练状态 ──
