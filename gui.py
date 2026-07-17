@@ -1452,8 +1452,8 @@ class MainWindow(QMainWindow):
         # 传统AI（使用硬件推荐的搜索深度）
         self.traditional_ai = TraditionalAI(search_depth=self._recommended_trad_depth)
 
-        # 并行对弈局数
-        self.num_parallel_games = min(5, max(1, hw_cpu.get('cores_physical', 4) // 2))
+        # AI vs AI 演示默认用 3 局并行（固定值，训练相关参数在训练面板调整）
+        self.demo_parallel_games = 3
 
         # 对弈计时器
         self.ai_timer = QTimer(self)
@@ -1522,38 +1522,14 @@ class MainWindow(QMainWindow):
         mode_group.setLayout(mode_layout)
         right_layout.addWidget(mode_group)
 
-        # AI设置滑动条（仅保留对弈相关的并行局数）
-        ai_setting_group = QGroupBox("AI设置")
-        ai_setting_layout = QVBoxLayout()
-
-        # 并行对弈局数滑动条（AI vs AI 演示 / 训练数据收集）
-        parallel_layout = QHBoxLayout()
-        parallel_layout.addWidget(QLabel("并行局数:"))
-        self.slider_parallel = QSlider(Qt.Orientation.Horizontal)
-        self.slider_parallel.setRange(1, 10)
-        self.slider_parallel.setValue(self.num_parallel_games)
-        self.slider_parallel.setSingleStep(1)
-        self.slider_parallel.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.slider_parallel.setTickInterval(1)
-        self.slider_parallel.valueChanged.connect(self._on_parallel_changed)
-        parallel_layout.addWidget(self.slider_parallel)
-        self.lbl_parallel_val = QLabel(str(self.num_parallel_games))
-        self.lbl_parallel_val.setMinimumWidth(35)
-        self.lbl_parallel_val.setAlignment(Qt.AlignmentFlag.AlignRight)
-        parallel_layout.addWidget(self.lbl_parallel_val)
-        ai_setting_layout.addLayout(parallel_layout)
-
-        # GPU加速提示
+        # 计算设备信息（仅显示，无可调参数）
         gpu_status = "GPU (CUDA)" if self.device.type == 'cuda' else "CPU"
         gpu_mem = _HW_SUMMARY.get('gpu', {}).get('total_memory_mb', 0)
         gpu_name_short = _HW_SUMMARY.get('gpu', {}).get('name', 'CPU')
         self.lbl_gpu_status = QLabel(
-            f"计算: {gpu_status} | {gpu_name_short} ({gpu_mem}MB)")
-        self.lbl_gpu_status.setStyleSheet("color: #888; font-size: 10px;")
-        ai_setting_layout.addWidget(self.lbl_gpu_status)
-
-        ai_setting_group.setLayout(ai_setting_layout)
-        right_layout.addWidget(ai_setting_group)
+            f"🧠 {gpu_status} | {gpu_name_short} ({gpu_mem}MB)")
+        self.lbl_gpu_status.setStyleSheet("color: #888; font-size: 10px; padding: 4px;")
+        right_layout.addWidget(self.lbl_gpu_status)
 
         # 控制按钮
         ctrl_group = QGroupBox("操作")
@@ -1759,11 +1735,6 @@ class MainWindow(QMainWindow):
         self.game_mode = modes[index]
         self._new_game()
 
-    def _on_parallel_changed(self, value: int):
-        """并行对弈局数滑动条变化"""
-        self.num_parallel_games = value
-        self.lbl_parallel_val.setText(str(value))
-
     def _on_training_mode_toggled(self, checked: bool):
         """训练模式切换"""
         self.training_mode = checked
@@ -1899,7 +1870,7 @@ class MainWindow(QMainWindow):
         if self.model is None:
             return
 
-        ngames = self.num_parallel_games
+        ngames = self.demo_parallel_games
         self.ai_thinking = True
         self.lbl_status.setText(f"AI训练对弈中({ngames}局并发)...")
         self.status_bar.showMessage(f"训练数据收集: {ngames}局并发对弈进行中...")
