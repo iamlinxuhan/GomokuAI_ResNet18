@@ -1,32 +1,91 @@
+# =============================================================================
+# 五子棋AI训练配置文件 v2.0
+# =============================================================================
+#
+# 本配置文件现在支持两种运行模式：
+#   1. 手动配置模式（当前文件）：直接指定所有参数
+#   2. 自动配置模式：由 hardware_auto_config.py 根据硬件自动生成配置
+#
+# 如果想使用硬件自动配置，可以删除此文件或留空，系统会自动检测并推荐参数。
+# 如果指定了参数，系统会使用指定值覆盖自动检测值。
+#
+# 您的硬件（戴尔 G16）自动推荐值：
+#   GPU: NVIDIA GeForce RTX 3060 (6GB)
+#   CPU: Intel i7-12700H (14核/20线程)
+#   推荐 Batch: 1024 | MCTS: 400 | 网络: 128通道, 7残差块
+# =============================================================================
+
 training:
+  # ── 训练模式 ──
+  # self: 自我对弈（AlphaZero风格强化学习）
+  # trad: 传统AI对抗（Minimax + Alpha-Beta）
+  # human: 人机对弈数据收集
   modes:
     - self
     - trad
-  learning_rate: 0.02
-  batch_size: 1024
-  num_mcts_simulations: 400
-  total_steps: 500000
-  use_cuda: true
+
+  # ── 网络结构 ──
+  # 如果留空或注释掉，系统会根据 GPU 显存自动选择：
+  #   < 2GB:  32通道, 5残差块  (~0.03M参数)
+  #   2-4GB:  64通道, 7残差块  (~0.4M参数)
+  #   4-8GB:  128通道, 7残差块 (~1.6M参数)  ← RTX3060
+  #   8-12GB: 192通道, 10残差块(~5.0M参数)
+  #   > 12GB: 256通道, 15残差块(~12M参数)
+  # network:
+  #   num_filters: 128
+  #   num_res_blocks: 7
+  #   policy_channels: 32
+  #   value_channels: 32
+  #   value_hidden: 128
+
+  # ── 训练超参数 ──
+  learning_rate: 0.02         # 学习率（会根据 batch_size 自动缩放）
+  batch_size: 1024            # 批大小（会根据 GPU 显存自动调整）
+  num_mcts_simulations: 400   # MCTS 每次搜索的模拟次数
+  total_steps: 500000         # 总训练步数
+  use_cuda: true              # 是否使用 GPU（自动检测）
+  mixed_precision: true       # 混合精度训练（AMP），有 GPU 时自动开启
+  gradient_accumulation_steps: 1  # 梯度累积步数（增大可模拟更大 batch）
+
+  # ── 目录 ──
   model_dir: "./models"
   log_dir: "./logs"
-  save_interval_minutes: 5
-  auto_eval_games: 100
+
+  # ── 保存与评估 ──
+  save_interval_minutes: 5    # 自动保存间隔（分钟）
+  auto_eval_games: 100        # 自动评估时每轮局数
+  eval_interval_steps: 5000   # 自动评估间隔步数
+
+  # ── 自我对弈 ──
   self_play:
-    num_processes: 4
-    mcts_simulations: 400
+    num_processes: 4           # 并行进程数（根据CPU核心数自动调整）
+    mcts_simulations: 400      # 自我对弈MCTS模拟次数
+
+  # ── 传统AI ──
   traditional:
-    initial_depth: 4
-    depth_range: [1, 8]
-    games_per_adjust: 10
-    target_win_rate: 0.20
-    win_rate_window: 100
+    initial_depth: 4          # 初始搜索深度
+    depth_range: [1, 8]       # 深度范围（会根据GPU性能自动调整）
+    games_per_adjust: 10      # 每多少局调整一次深度
+    target_win_rate: 0.20     # 目标胜率（NN vs 传统AI）
+    win_rate_window: 100      # 胜率统计窗口
     adjust_step: 1
+
+  # ── 人机对弈 ──
   human:
     enabled: false
     temperature_for_human_moves: 0.1
+
+  # ── 经验回放池 ──
   replay_buffer:
-    capacity: 2000000
+    capacity: 2000000                    # 容量（根据系统内存自动调整）
+    prioritized_alpha: 0.6               # PER alpha (0=均匀, 1=完全优先级)
+    prioritized_beta: 0.4                # PER beta (重要性采样权重)
     sampling_weights:
       self: 0.6
       trad: 0.3
       human: 0.1
+
+  # ── 数据增强 ──
+  augmentation:
+    enabled: true              # 启用数据增强（8种对称变换）
+    symmetry: true

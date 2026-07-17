@@ -35,11 +35,39 @@ from PyQt6.QtCore import (
     QEvent, QObject,
 )
 
+# matplotlib 图表嵌入
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+# 设置中文字体（如果可用）
+try:
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+except Exception:
+    pass
+
 from game import GomokuGame, BOARD_SIZE, BLACK, WHITE, EMPTY, get_center_weights
 from network import GomokuNet
 from mcts import MCTS, get_best_move_from_probs
 from traditional_ai import TraditionalAI
 from trainer import Trainer, ReplayBuffer
+
+# 日志
+import logging
+logger = logging.getLogger(__name__)
+
+# 硬件自动配置（首次导入时检测硬件）
+try:
+    from hardware_auto_config import get_auto_config, get_hardware_summary, format_hardware_summary
+    _HW_CONFIG = get_auto_config()
+    _HW_SUMMARY = get_hardware_summary()
+    _HW_SUMMARY_TEXT = format_hardware_summary(_HW_SUMMARY)
+except Exception:
+    _HW_CONFIG = {}
+    _HW_SUMMARY = {'gpu': {'available': False, 'name': '未知'}, 'gpu_tier_name': '未知'}
+    _HW_SUMMARY_TEXT = "硬件信息检测失败"
 
 # 项目根目录（所有路径以此为基础）
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -547,15 +575,28 @@ class TrainingThread(QThread):
 # ============================================================================
 
 class TrainingPanel(QDialog):
-    """训练监控面板"""
+    """训练监控面板 v2.0 — 新增硬件信息显示和自动配置推荐"""
 
     def __init__(self, parent=None, config: dict = None):
         super().__init__(parent)
-        self.setWindowTitle("训练监控面板")
-        self.setMinimumSize(700, 600)
+        self.setWindowTitle("训练监控面板 v2.0")
+        self.setMinimumSize(800, 700)
         self.config = config or {}
         self.training_thread: Optional[TrainingThread] = None
         self._weight_adjusting = False  # 防止采样权重联动时的递归信号
+
+        # 加载硬件自动配置
+        try:
+            from hardware_auto_config import get_hardware_summary, get_auto_config, format_hardware_summary, format_auto_config_summary
+            self.hw_summary = get_hardware_summary()
+            self.auto_config = get_auto_config()
+            self.hw_summary_text = format_hardware_summary(self.hw_summary)
+            self.auto_config_text = format_auto_config_summary(self.auto_config)
+        except Exception:
+            self.hw_summary = {'gpu': {'available': False, 'name': '未知'}, 'gpu_tier_name': '未知', 'system_memory_mb': 0}
+            self.auto_config = {}
+            self.hw_summary_text = "硬件检测失败"
+            self.auto_config_text = "配置生成失败"
 
         self._init_ui()
         self._start_status_update()
@@ -579,6 +620,8 @@ class TrainingPanel(QDialog):
         self.cb_trad.setChecked(True)
         self.cb_human = QCheckBox("人机对弈 (human)")
         self.cb_human.setChecked(False)
+        # HUMAN 取消勾选时自动将权重滑条置0
+        self.cb_human.toggled.connect(self._on_human_toggled)
         mode_layout.addWidget(self.cb_self)
         mode_layout.addWidget(self.cb_trad)
         mode_layout.addWidget(self.cb_human)
@@ -689,7 +732,7 @@ class TrainingPanel(QDialog):
         param_layout.addWidget(self.slider_trad_init_depth, 3, 1)
         param_layout.addWidget(self.lbl_trad_init_depth, 3, 2)
 
-        # 每轮对弈局数 — 每个训练迭代生成多少局对局数据
+        # 每轮对弈局数 — 每个训练迭代生成多少局对局数据（自动调参可调整）
         param_layout.addWidget(QLabel("每轮对弈局数:"), 3, 3)
         self.slider_parallel = QSlider(Qt.Orientation.Horizontal)
         self.slider_parallel.setRange(1, 20)
@@ -762,55 +805,118 @@ class TrainingPanel(QDialog):
 
         tabs.addTab(control_tab, "训练控制")
 
-        # --- 监控 ---
+        # --- 硬件信息 ---
+        hw_tab = QWidget()
+        hw_layout = QVBoxLayout(hw_tab)
+
+        # 硬件检测报告
+        hw_text = QTextEdit()
+        hw_text.setReadOnly(True)
+        hw_text.setFont(QFont('Consolas', 9))
+        hw_text.setText(self.hw_summary_text)
+        hw_layout.addWidget(QLabel("📋 硬件检测报告:"))
+        hw_layout.addWidget(hw_text)
+
+        # 推荐配置
+        config_text = QTextEdit()
+        config_text.setReadOnly(True)
+        config_text.setFont(QFont('Consolas', 9))
+        config_text.setText(self.auto_config_text)
+        hw_layout.addWidget(QLabel("⚙️ 自动推荐配置:"))
+        hw_layout.addWidget(config_text)
+
+        # 应用推荐配置按钮
+        btn_apply_hw = QPushButton("应用推荐配置到训练参数")
+        btn_apply_hw.clicked.connect(self._apply_hardware_config)
+        hw_layout.addWidget(btn_apply_hw)
+
+        # GPU基准测试按钮
+        btn_benchmark = QPushButton("运行GPU基准测试（约10秒）")
+        btn_benchmark.clicked.connect(self._run_gpu_benchmark)
+        hw_layout.addWidget(btn_benchmark)
+
+        tabs.addTab(hw_tab, "硬件信息")
+
+        # --- 监控（含图表） ---
         monitor_tab = QWidget()
         monitor_layout = QVBoxLayout(monitor_tab)
 
-        # 进度信息
-        self.lbl_step = QLabel("训练步数: 0")
-        self.lbl_step.setFont(QFont('Arial', 12, QFont.Weight.Bold))
-        monitor_layout.addWidget(self.lbl_step)
-
+        # 顶部信息栏（紧凑横排）
+        info_bar = QHBoxLayout()
+        self.lbl_step = QLabel("步数: 0")
+        self.lbl_step.setFont(QFont('Arial', 10, QFont.Weight.Bold))
+        info_bar.addWidget(self.lbl_step)
         self.lbl_buffer = QLabel("经验池: 0")
-        monitor_layout.addWidget(self.lbl_buffer)
-
+        info_bar.addWidget(self.lbl_buffer)
         self.lbl_loss = QLabel("损失: -")
-        monitor_layout.addWidget(self.lbl_loss)
-
-        self.lbl_lr = QLabel("学习率: -")
-        monitor_layout.addWidget(self.lbl_lr)
-
-        self.lbl_trad_depth = QLabel("传统AI深度: -")
-        monitor_layout.addWidget(self.lbl_trad_depth)
-
-        self.lbl_trad_wr = QLabel("NN vs 传统AI胜率: -")
-        monitor_layout.addWidget(self.lbl_trad_wr)
-
+        info_bar.addWidget(self.lbl_loss)
+        self.lbl_lr = QLabel("LR: -")
+        info_bar.addWidget(self.lbl_lr)
+        self.lbl_trad_wr = QLabel("胜率: -")
+        info_bar.addWidget(self.lbl_trad_wr)
+        self.lbl_trad_depth = QLabel("深度: -")
+        info_bar.addWidget(self.lbl_trad_depth)
         self.lbl_elo = QLabel("ELO: -")
-        monitor_layout.addWidget(self.lbl_elo)
+        info_bar.addWidget(self.lbl_elo)
+        info_bar.addStretch()
+        monitor_layout.addLayout(info_bar)
 
-        # 训练统计概要
-        self.lbl_total_games = QLabel("总训练场数: 0")
-        self.lbl_total_games.setFont(QFont('Arial', 11, QFont.Weight.Bold))
-        monitor_layout.addWidget(self.lbl_total_games)
+        # 图表区域（3个子图：损失、胜率、自动参数）
+        self.chart_widget = QWidget()
+        self.chart_layout = QVBoxLayout(self.chart_widget)
+        self.chart_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.lbl_total_wins = QLabel("总胜利: 0")
-        monitor_layout.addWidget(self.lbl_total_wins)
+        # 创建 matplotlib 图表
+        self.fig = Figure(figsize=(8, 4.5), dpi=100)
+        self.fig.patch.set_facecolor('#2b2b2b')  # 深色背景
 
-        self.lbl_recent_wins = QLabel("100局内胜利: 0")
-        monitor_layout.addWidget(self.lbl_recent_wins)
+        # 损失曲线 (左上)
+        self.ax_loss = self.fig.add_subplot(2, 2, 1)
+        self._style_ax(self.ax_loss, '损失曲线', '步数', '损失')
+        self.line_total, = self.ax_loss.plot([], [], 'r-', lw=1.5, label='总损失')
+        self.line_policy, = self.ax_loss.plot([], [], 'g-', lw=0.8, alpha=0.7, label='策略')
+        self.line_value, = self.ax_loss.plot([], [], 'b-', lw=0.8, alpha=0.7, label='价值')
+        self.ax_loss.legend(fontsize=7, loc='upper right')
 
-        self.lbl_recent_win_rate = QLabel("100局内胜率: -")
-        monitor_layout.addWidget(self.lbl_recent_win_rate)
+        # 胜率曲线 (右上)
+        self.ax_wr = self.fig.add_subplot(2, 2, 2)
+        self._style_ax(self.ax_wr, 'NN vs 传统AI 胜率', '局数', '胜率')
+        self.line_wr, = self.ax_wr.plot([], [], 'c-', lw=1.5)
+        self.ax_wr.axhline(0.20, color='y', ls='--', lw=0.8, alpha=0.5, label='目标')
+        self.ax_wr.set_ylim(0, 1.0)
+        self.ax_wr.legend(fontsize=7, loc='upper left')
+
+        # MCTS/温度曲线 (左下)
+        self.ax_mcts = self.fig.add_subplot(2, 2, 3)
+        self._style_ax(self.ax_mcts, '自动参数趋势', '步数', 'MCTS模拟')
+        self.line_mcts, = self.ax_mcts.plot([], [], 'm-', lw=1.5, label='MCTS')
+        self.ax_mcts_twin = self.ax_mcts.twinx()
+        self.ax_mcts_twin.set_ylabel('温度', color='orange', fontsize=8)
+        self.line_temp, = self.ax_mcts_twin.plot([], [], 'orange', lw=1, label='温度')
+        self.ax_mcts.legend(fontsize=7, loc='upper left')
+
+        # 学习率 (右下)
+        self.ax_lr = self.fig.add_subplot(2, 2, 4)
+        self._style_ax(self.ax_lr, '学习率', '步数', 'LR')
+        self.line_lr, = self.ax_lr.plot([], [], 'w-', lw=1.5)
+
+        self.fig.tight_layout(pad=1.5)
+
+        self.chart_canvas = FigureCanvas(self.fig)
+        self.chart_canvas.setMinimumHeight(280)
+        self.chart_layout.addWidget(self.chart_canvas)
+        monitor_layout.addWidget(self.chart_widget, stretch=1)
 
         # 进度条
         self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumHeight(18)
         monitor_layout.addWidget(self.progress_bar)
 
         # 日志
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
+        self.log_text.setMaximumHeight(120)
+        self.log_text.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-size: 11px;")
         monitor_layout.addWidget(QLabel("训练日志:"))
         monitor_layout.addWidget(self.log_text)
 
@@ -820,6 +926,11 @@ class TrainingPanel(QDialog):
 
     def _start_training(self):
         """开始训练"""
+        # 防止重复启动
+        if self.training_thread and self.training_thread.isRunning():
+            self._append_log("训练已在运行中")
+            return
+
         modes = []
         if self.cb_self.isChecked():
             modes.append('self')
@@ -832,7 +943,32 @@ class TrainingPanel(QDialog):
             QMessageBox.warning(self, "警告", "请至少选择一种训练模式")
             return
 
+        # 从硬件自动配置获取补充字段
+        hw_config = getattr(self, 'auto_config', {})
+        hw_net = hw_config.get('network', {})
+        hw_training = hw_config.get('training', {})
+
+        # 计算实际采样权重：HUMAN 未启用时 human=0，self/trad 重分配
+        has_human = self.cb_human.isChecked()
+        w_self = self.slider_self.value() / 100.0
+        w_trad = self.slider_trad.value() / 100.0
+        w_human = self.slider_human.value() / 100.0 if has_human else 0.0
+        if not has_human and w_human > 0:
+            # 重新归一化到总和=1
+            total = w_self + w_trad
+            if total > 0:
+                w_self = w_self / total
+                w_trad = w_trad / total
+
         config = {
+            # 网络结构（硬件自适应）
+            'network': {
+                'num_filters': hw_net.get('num_filters', 128),
+                'num_res_blocks': hw_net.get('num_res_blocks', 7),
+                'policy_channels': hw_net.get('policy_channels', 32),
+                'value_channels': hw_net.get('value_channels', 32),
+                'value_hidden': hw_net.get('value_hidden', 128),
+            },
             'training': {
                 'modes': modes,
                 'learning_rate': self.slider_lr.value() / 10000.0,
@@ -840,31 +976,52 @@ class TrainingPanel(QDialog):
                 'num_mcts_simulations': self.slider_mcts.value(),
                 'total_steps': self.slider_steps.value(),
                 'use_cuda': torch.cuda.is_available(),
+                # 以下字段从硬件推荐配置继承默认值
+                'mixed_precision': hw_training.get('mixed_precision', True),
+                'gradient_accumulation_steps': hw_training.get('gradient_accumulation_steps', 1),
+                'eval_interval_steps': hw_training.get('eval_interval_steps', 5000),
+                'num_workers': hw_training.get('num_workers', 4),
                 'model_dir': os.path.join(PROJECT_DIR, 'models'),
                 'log_dir': os.path.join(PROJECT_DIR, 'logs'),
                 'save_interval_minutes': self.slider_save.value(),
                 'auto_eval_games': self.slider_eval_games.value(),
                 'games_per_iteration': self.slider_parallel.value(),
+                # 自我对弈
+                'self_play': {
+                    'num_processes': hw_training.get('self_play', {}).get('num_processes', 4),
+                    'mcts_simulations': self.slider_mcts.value(),
+                },
+                # 经验回放池（含 PER）
                 'replay_buffer': {
                     'capacity': 2000000,
+                    'prioritized_alpha': 0.6,
+                    'prioritized_beta': 0.4,
                     'sampling_weights': {
-                        'self': self.slider_self.value() / 100.0,
-                        'trad': self.slider_trad.value() / 100.0,
-                        'human': self.slider_human.value() / 100.0,
-                    }
+                        'self': w_self,
+                        'trad': w_trad,
+                        'human': w_human,
+                    },
                 },
+                # 数据增强
+                'augmentation': {
+                    'enabled': hw_training.get('augmentation', {}).get('enabled', True),
+                    'symmetry': True,
+                },
+                # 传统AI
                 'traditional': {
                     'initial_depth': self.slider_trad_init_depth.value(),
                     'depth_range': [1, 8],
                     'games_per_adjust': 10,
                     'target_win_rate': 0.20,
                     'win_rate_window': 100,
+                    'adjust_step': 1,
                 },
+                # 人机对弈
                 'human': {
-                    'enabled': self.cb_human.isChecked(),
+                    'enabled': has_human,
                     'temperature_for_human_moves': 0.1,
-                }
-            }
+                },
+            },
         }
 
         self.training_thread = TrainingThread(config)
@@ -922,30 +1079,19 @@ class TrainingPanel(QDialog):
             self._append_log("模型已覆盖保存")
 
     def _update_status(self, status: dict):
-        """更新训练状态显示"""
-        self.lbl_step.setText(f"训练步数: {status.get('global_step', 0)}")
-        self.lbl_buffer.setText(f"经验池: {status.get('buffer_size', 0)}")
-        self.lbl_trad_depth.setText(f"传统AI深度: {status.get('trad_depth', '-')}")
+        """更新训练状态显示（紧凑信息栏 + 图表 + 控制滑条同步）"""
+        # ── 信息栏 ──
+        self.lbl_step.setText(f"步数: {status.get('global_step', 0)}")
+        self.lbl_buffer.setText(f"缓冲: {status.get('buffer_size', 0)}")
+        self.lbl_trad_depth.setText(f"深度: {status.get('trad_depth', '-')}")
         wr = status.get('trad_win_rate', 0)
-        self.lbl_trad_wr.setText(f"NN vs 传统AI胜率: {wr:.1%}")
-        self.lbl_elo.setText(f"ELO: current={status.get('elo_current', 0):.0f}, "
-                             f"best={status.get('elo_best', 0):.0f}")
-
-        # 训练统计概要
-        self.lbl_total_games.setText(f"总训练场数: {status.get('total_games', 0)}")
-        self.lbl_total_wins.setText(f"总胜利: {status.get('total_wins', 0)}")
-        self.lbl_recent_wins.setText(f"100局内胜利: {status.get('recent_wins', 0)}")
-        rwr = status.get('recent_win_rate', 0)
-        self.lbl_recent_win_rate.setText(f"100局内胜率: {rwr:.1%}")
+        self.lbl_trad_wr.setText(f"胜率: {wr:.0%}")
+        self.lbl_elo.setText(f"ELO: {status.get('elo_current', 0):.0f}")
 
         if status.get('loss_history'):
             last = status['loss_history'][-1]
-            self.lbl_loss.setText(
-                f"损失: total={last.get('total_loss', 0):.4f}, "
-                f"policy={last.get('policy_loss', 0):.4f}, "
-                f"value={last.get('value_loss', 0):.4f}"
-            )
-            self.lbl_lr.setText(f"学习率: {last.get('learning_rate', 0):.6f}")
+            self.lbl_loss.setText(f"损失: {last.get('total_loss', 0):.3f}")
+            self.lbl_lr.setText(f"LR: {last.get('learning_rate', 0):.5f}")
 
         total_steps = self.slider_steps.value()
         if total_steps > 0:
@@ -953,11 +1099,145 @@ class TrainingPanel(QDialog):
                 int(status.get('global_step', 0) / total_steps * 100)
             )
 
+        # ── 同步控制滑条（自动调参结果 → UI） ──
+        ap = status.get('auto_params', {})
+        if ap:
+            # MCTS 模拟次数：自动调参可能调整了它
+            auto_mcts = ap.get('mcts_simulations')
+            if auto_mcts and auto_mcts != self.slider_mcts.value():
+                self.slider_mcts.blockSignals(True)
+                self.slider_mcts.setValue(auto_mcts)
+                self.lbl_mcts_val.setText(str(auto_mcts))
+                self.slider_mcts.blockSignals(False)
+
+            # 每轮对弈局数：自动调参根据经验池调整
+            auto_games = ap.get('games_per_iteration')
+            if auto_games and auto_games != self.slider_parallel.value():
+                self.slider_parallel.blockSignals(True)
+                self.slider_parallel.setValue(auto_games)
+                self.lbl_parallel.setText(str(auto_games))
+                self.slider_parallel.blockSignals(False)
+
+        # 传统AI深度：自动难度调控可能调整了它
+        trad_depth = status.get('trad_depth')
+        if trad_depth and trad_depth != self.slider_trad_init_depth.value():
+            self.slider_trad_init_depth.blockSignals(True)
+            self.slider_trad_init_depth.setValue(trad_depth)
+            self.lbl_trad_init_depth.setText(str(trad_depth))
+            self.slider_trad_init_depth.blockSignals(False)
+
+        # ── 刷新图表 ──
+        self._update_charts(status)
+
+    @staticmethod
+    def _style_ax(ax, title, xlabel, ylabel):
+        """给图表坐标轴设置深色主题样式"""
+        ax.set_facecolor('#2b2b2b')
+        ax.spines['bottom'].set_color('#555')
+        ax.spines['top'].set_color('#555')
+        ax.spines['left'].set_color('#555')
+        ax.spines['right'].set_color('#555')
+        ax.tick_params(colors='#aaa', labelsize=7)
+        ax.set_title(title, color='#ddd', fontsize=9)
+        ax.set_xlabel(xlabel, color='#aaa', fontsize=7)
+        ax.set_ylabel(ylabel, color='#aaa', fontsize=7)
+        ax.grid(True, alpha=0.15, linestyle='-')
+
+    def _update_charts(self, status: dict):
+        """更新图表数据"""
+        loss_hist = status.get('loss_history', [])
+        wr_hist = status.get('win_rate_history', [])
+
+        # ── 损失曲线 ──
+        if len(loss_hist) >= 2:
+            steps = [h.get('step', 0) for h in loss_hist]
+            totals = [h.get('total_loss', 0) for h in loss_hist]
+            policies = [h.get('policy_loss', 0) for h in loss_hist]
+            values = [h.get('value_loss', 0) for h in loss_hist]
+            self.line_total.set_data(steps, totals)
+            self.line_policy.set_data(steps, policies)
+            self.line_value.set_data(steps, values)
+            self.ax_loss.relim()
+            self.ax_loss.autoscale_view()
+            # 只显示最近 200 步的细节
+            if len(steps) > 200:
+                self.ax_loss.set_xlim(steps[-200], steps[-1])
+
+        # ── 胜率曲线 ──
+        if len(wr_hist) >= 2:
+            idx = list(range(len(wr_hist)))
+            win_rates = []
+            for h in wr_hist:
+                if 'win_rate' in h:
+                    win_rates.append(h['win_rate'])
+                elif 'nn_win_rate' in h:
+                    win_rates.append(h['nn_win_rate'])
+                else:
+                    win_rates.append(0.5)
+            self.line_wr.set_data(idx, win_rates)
+            self.ax_wr.relim()
+            self.ax_wr.autoscale_view()
+
+        # ── 自动参数趋势（MCTS + 温度） ──
+        ap = status.get('auto_params', {})
+        if ap:
+            # 从 loss_history 中提取时间线上的 MCTS 值（每100步采样）
+            param_steps = []
+            mcts_vals = []
+            temp_vals = []
+            for h in loss_hist[::20]:  # 每20步采一个点
+                param_steps.append(h.get('step', 0))
+                # 从 status 获取最新 auto_params（简化：所有点用当前值）
+                mcts_vals.append(ap.get('mcts_simulations', 200))
+                temp_vals.append(ap.get('temperature', 1.0))
+
+            if param_steps:
+                self.line_mcts.set_data(param_steps, mcts_vals)
+                self.line_temp.set_data(param_steps, temp_vals)
+                self.ax_mcts.relim()
+                self.ax_mcts.autoscale_view()
+
+        # ── 学习率 ──
+        if len(loss_hist) >= 2:
+            lr_steps = [h.get('step', 0) for h in loss_hist]
+            lr_vals = [h.get('learning_rate', 0) for h in loss_hist]
+            if any(lr_vals):
+                self.line_lr.set_data(lr_steps, lr_vals)
+                self.ax_lr.relim()
+                self.ax_lr.autoscale_view()
+
+        # 刷新画布
+        self.chart_canvas.draw_idle()
+
     def _append_log(self, msg: str):
         """添加日志"""
         from datetime import datetime
         ts = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{ts}] {msg}")
+
+    def _on_human_toggled(self, checked: bool):
+        """HUMAN 勾选切换 → 自动调整采样权重"""
+        self._weight_adjusting = True
+        if not checked:
+            # 取消勾选 → human=0，self/trad 平分 100
+            self.slider_human.setValue(0)
+            self.lbl_human.setText("0%")
+            self.slider_self.setValue(60)
+            self.lbl_self.setText("60%")
+            self.slider_trad.setValue(40)
+            self.lbl_trad.setText("40%")
+        else:
+            # 勾选 HUMAN → 从 self/trad 各让出 5% 给 human
+            if self.slider_human.value() == 0:
+                sv = self.slider_self.value()
+                tv = self.slider_trad.value()
+                if sv >= 10 and tv >= 5:
+                    self.slider_self.setValue(sv - 5)
+                    self.slider_trad.setValue(tv - 5)
+                    self.slider_human.setValue(10)
+                else:
+                    self.slider_human.setValue(10)
+        self._weight_adjusting = False
 
     def _on_weight_self_changed(self, v):
         """Self采样权重变化 → 联动调整Trad和Human，保持总和=100。"""
@@ -1013,6 +1293,65 @@ class TrainingPanel(QDialog):
 
         self._weight_adjusting = False
 
+    def _apply_hardware_config(self):
+        """将硬件推荐配置应用到训练参数滑块"""
+        try:
+            train = self.auto_config.get('training', {})
+
+            # 学习率
+            lr = train.get('learning_rate', 0.02)
+            self.slider_lr.setValue(int(lr * 10000))
+
+            # Batch Size
+            self.slider_batch.setValue(train.get('batch_size', 1024))
+
+            # MCTS 模拟次数
+            self.slider_mcts.setValue(train.get('num_mcts_simulations', 400))
+
+            # 传统AI初始深度
+            trad = train.get('traditional', {})
+            self.slider_trad_init_depth.setValue(trad.get('initial_depth', 4))
+
+            # 每轮对弈局数（根据硬件CPU核心数推荐）
+            cpu_count = self.auto_config.get('hardware', {}).get('cpu_threads', 8)
+            recommended_games = max(2, min(10, cpu_count // 4))
+            self.slider_parallel.setValue(recommended_games)
+
+            self._append_log("✅ 已应用硬件推荐配置参数")
+            self._append_log(f"  Batch: {train.get('batch_size', 1024)}, "
+                             f"MCTS: {train.get('num_mcts_simulations', 400)}, "
+                             f"LR: {train.get('learning_rate', 0.02):.5f}")
+        except Exception as e:
+            self._append_log(f"❌ 应用配置失败: {e}")
+
+    def _run_gpu_benchmark(self):
+        """运行 GPU 基准测试"""
+        self._append_log("开始 GPU 基准测试（约10秒）...")
+        try:
+            from hardware_auto_config import benchmark_gpu_memory
+            if torch.cuda.is_available():
+                # 获取当前网络配置
+                net = self.auto_config.get('network', {})
+                train = self.auto_config.get('training', {})
+                result = benchmark_gpu_memory(
+                    num_filters=net.get('num_filters', 128),
+                    num_res_blocks=net.get('num_res_blocks', 7),
+                    batch_size=train.get('batch_size', 1024),
+                )
+                if result.get('safe', False):
+                    self._append_log(f"  ✅ 基准测试完成:")
+                    self._append_log(f"    前向推理: {result['forward_time_ms']:.2f} ms")
+                    self._append_log(f"    显存使用: {result['memory_used_mb']:.1f} MB")
+                    self._append_log(f"    推荐 Batch: {result['recommended_batch']}")
+                    # 自动更新 batch 滑块
+                    self.slider_batch.setValue(result['recommended_batch'])
+                else:
+                    self._append_log(f"  ⚠️ 测试不通过: {result.get('error', '未知')}")
+            else:
+                self._append_log("  没有检测到 GPU，跳过基准测试")
+        except Exception as e:
+            self._append_log(f"  ❌ 基准测试失败: {e}")
+
     def closeEvent(self, event):
         """关闭面板时恢复主窗口GUI"""
         main_window = self.parent()
@@ -1042,28 +1381,44 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        # ── 硬件自适应初始化 ──
         gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU"
-        self.setWindowTitle(f"五子棋神经网络AI — {gpu_name}")
+        hw_tier = _HW_SUMMARY.get('gpu_tier_name', '未知')
+        self.setWindowTitle(f"五子棋神经网络AI — {gpu_name} [{hw_tier}]")
         self.setMinimumSize(900, 650)
 
+        # 显示硬件信息
+        hw_gpu = _HW_SUMMARY.get('gpu', {})
+        hw_cpu = _HW_SUMMARY.get('cpu', {})
+        logger.info(f"硬件检测: GPU={hw_gpu.get('name', 'N/A')} "
+                    f"显存={hw_gpu.get('total_memory_mb', 0)}MB "
+                    f"CPU={hw_cpu.get('cores_physical', '?')}核")
+
+        # ── 从硬件配置读取推荐参数 ──
+        train_cfg = _HW_CONFIG.get('training', {})
+        self._recommended_mcts = train_cfg.get('num_mcts_simulations', 400)
+        trad_cfg = train_cfg.get('traditional', {})
+        self._recommended_trad_depth = trad_cfg.get('initial_depth', 4)
+
         # 游戏状态
-        self.game_mode = 'human_black'  # 'human_black', 'human_white', 'ai_vs_ai', 'trad_vs_nn'
-        self.training_mode = False  # 人机对弈训练模式
-        self.traditional_is_black = True  # 传统AI vs NN 模式中，传统AI执黑先手
-        self._ref_game_board = GomokuGame()  # 训练模式下参考局的棋盘状态
+        self.game_mode = 'human_black'
+        self.training_mode = False
+        self.traditional_is_black = True
+        self._ref_game_board = GomokuGame()
 
         # AI引擎
         self.model: Optional[GomokuNet] = None
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         self.ai_thread: Optional[AIThread] = None
         self.ai_thinking = False
-        self.num_mcts_simulations = 400
+        self.num_mcts_simulations = self._recommended_mcts
 
-        # 传统AI（用于纯传统AI模式）
-        self.traditional_ai = TraditionalAI(search_depth=4)
+        # 传统AI（使用硬件推荐的搜索深度）
+        self.traditional_ai = TraditionalAI(search_depth=self._recommended_trad_depth)
 
-        # 并行对弈局数（训练数据收集 / AI vs AI 演示）
-        self.num_parallel_games = 5
+        # 并行对弈局数
+        self.num_parallel_games = min(5, max(1, hw_cpu.get('cores_physical', 4) // 2))
 
         # 对弈计时器
         self.ai_timer = QTimer(self)
@@ -1072,6 +1427,14 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._load_model()
         self._apply_dark_theme()
+
+        # 状态栏显示硬件信息
+        self.status_bar.showMessage(
+            f"硬件: {hw_gpu.get('name', 'CPU')} "
+            f"({hw_gpu.get('total_memory_mb', 0)}MB) | "
+            f"推荐MCTS: {self._recommended_mcts}次 | "
+            f"推荐深度: {self._recommended_trad_depth}层"
+        )
 
     def _init_ui(self):
         """初始化UI"""
@@ -1104,7 +1467,7 @@ class MainWindow(QMainWindow):
         info_layout.addWidget(self.lbl_status)
 
         gpu_tag = "GPU" if self.device.type == 'cuda' else "CPU"
-        self.lbl_ai_info = QLabel(f"AI: MCTS {self.num_mcts_simulations}次 [{gpu_tag}]")
+        self.lbl_ai_info = QLabel(f"推理设备: [{gpu_tag}]")
         info_layout.addWidget(self.lbl_ai_info)
         info_group.setLayout(info_layout)
         right_layout.addWidget(info_group)
@@ -1124,56 +1487,22 @@ class MainWindow(QMainWindow):
         mode_group.setLayout(mode_layout)
         right_layout.addWidget(mode_group)
 
-        # AI设置滑动条
+        # AI设置滑动条（仅保留对弈相关的并行局数）
         ai_setting_group = QGroupBox("AI设置")
         ai_setting_layout = QVBoxLayout()
 
-        # MCTS模拟次数滑动条
-        mcts_layout = QHBoxLayout()
-        mcts_layout.addWidget(QLabel("MCTS模拟:"))
-        self.slider_mcts = QSlider(Qt.Orientation.Horizontal)
-        self.slider_mcts.setRange(50, 800)
-        self.slider_mcts.setValue(400)
-        self.slider_mcts.setSingleStep(50)
-        self.slider_mcts.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.slider_mcts.setTickInterval(100)
-        self.slider_mcts.valueChanged.connect(self._on_mcts_slider_changed)
-        mcts_layout.addWidget(self.slider_mcts)
-        self.lbl_mcts_val = QLabel("400")
-        self.lbl_mcts_val.setMinimumWidth(35)
-        self.lbl_mcts_val.setAlignment(Qt.AlignmentFlag.AlignRight)
-        mcts_layout.addWidget(self.lbl_mcts_val)
-        ai_setting_layout.addLayout(mcts_layout)
-
-        # 传统AI搜索深度滑动条
-        trad_depth_layout = QHBoxLayout()
-        trad_depth_layout.addWidget(QLabel("传统AI深度:"))
-        self.slider_trad_depth = QSlider(Qt.Orientation.Horizontal)
-        self.slider_trad_depth.setRange(1, 8)
-        self.slider_trad_depth.setValue(4)
-        self.slider_trad_depth.setSingleStep(1)
-        self.slider_trad_depth.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.slider_trad_depth.setTickInterval(1)
-        self.slider_trad_depth.valueChanged.connect(self._on_trad_depth_changed)
-        trad_depth_layout.addWidget(self.slider_trad_depth)
-        self.lbl_trad_depth_val = QLabel("4")
-        self.lbl_trad_depth_val.setMinimumWidth(35)
-        self.lbl_trad_depth_val.setAlignment(Qt.AlignmentFlag.AlignRight)
-        trad_depth_layout.addWidget(self.lbl_trad_depth_val)
-        ai_setting_layout.addLayout(trad_depth_layout)
-
-        # 并行对弈局数滑动条（训练数据收集 / AI vs AI 演示模式）
+        # 并行对弈局数滑动条（AI vs AI 演示 / 训练数据收集）
         parallel_layout = QHBoxLayout()
         parallel_layout.addWidget(QLabel("并行局数:"))
         self.slider_parallel = QSlider(Qt.Orientation.Horizontal)
         self.slider_parallel.setRange(1, 10)
-        self.slider_parallel.setValue(5)
+        self.slider_parallel.setValue(self.num_parallel_games)
         self.slider_parallel.setSingleStep(1)
         self.slider_parallel.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_parallel.setTickInterval(1)
         self.slider_parallel.valueChanged.connect(self._on_parallel_changed)
         parallel_layout.addWidget(self.slider_parallel)
-        self.lbl_parallel_val = QLabel("5")
+        self.lbl_parallel_val = QLabel(str(self.num_parallel_games))
         self.lbl_parallel_val.setMinimumWidth(35)
         self.lbl_parallel_val.setAlignment(Qt.AlignmentFlag.AlignRight)
         parallel_layout.addWidget(self.lbl_parallel_val)
@@ -1181,7 +1510,10 @@ class MainWindow(QMainWindow):
 
         # GPU加速提示
         gpu_status = "GPU (CUDA)" if self.device.type == 'cuda' else "CPU"
-        self.lbl_gpu_status = QLabel(f"计算设备: {gpu_status}  |  深度越大响应越慢")
+        gpu_mem = _HW_SUMMARY.get('gpu', {}).get('total_memory_mb', 0)
+        gpu_name_short = _HW_SUMMARY.get('gpu', {}).get('name', 'CPU')
+        self.lbl_gpu_status = QLabel(
+            f"计算: {gpu_status} | {gpu_name_short} ({gpu_mem}MB)")
         self.lbl_gpu_status.setStyleSheet("color: #888; font-size: 10px;")
         ai_setting_layout.addWidget(self.lbl_gpu_status)
 
@@ -1247,21 +1579,40 @@ class MainWindow(QMainWindow):
         self.setPalette(dark_palette)
 
     def _load_model(self):
-        """加载模型（覆盖策略：model.pt）"""
+        """加载模型（v2.0: 根据硬件配置创建自适应网络）"""
         model_path = os.path.join(PROJECT_DIR, 'models', 'model.pt')
         if os.path.exists(model_path):
             try:
                 self.model, info = GomokuNet.load_checkpoint(model_path, self.device)
+                model_params = self.model.count_parameters()
                 self.status_bar.showMessage(
                     f"模型已加载: step={info.get('step', 0)}, "
+                    f"参数={model_params:,}, "
                     f"elo={info.get('elo', '-')}"
                 )
             except Exception as e:
-                self.status_bar.showMessage(f"模型加载失败: {e}")
-                self.model = GomokuNet().to(self.device)
+                self.status_bar.showMessage(f"模型加载失败: {e}，创建新模型")
+                # 按硬件配置创建网络
+                net_cfg = _HW_CONFIG.get('network', {})
+                self.model = GomokuNet(
+                    num_filters=net_cfg.get('num_filters', 128),
+                    num_res_blocks=net_cfg.get('num_res_blocks', 7),
+                    use_se=True,
+                ).to(self.device)
         else:
-            self.status_bar.showMessage("未找到预训练模型，使用随机权重")
-            self.model = GomokuNet().to(self.device)
+            # 未找到模型，按硬件配置创建新网络
+            net_cfg = _HW_CONFIG.get('network', {})
+            self.model = GomokuNet(
+                num_filters=net_cfg.get('num_filters', 128),
+                num_res_blocks=net_cfg.get('num_res_blocks', 7),
+                use_se=True,
+            ).to(self.device)
+            model_params = self.model.count_parameters()
+            self.status_bar.showMessage(
+                f"新建网络: {net_cfg.get('num_filters')}通道, "
+                f"{net_cfg.get('num_res_blocks')}残差块, "
+                f"参数={model_params:,}"
+            )
 
     def _load_model_dialog(self):
         """加载模型对话框"""
@@ -1372,18 +1723,6 @@ class MainWindow(QMainWindow):
         modes = ['human_black', 'human_white', 'ai_vs_ai', 'trad_vs_nn']
         self.game_mode = modes[index]
         self._new_game()
-
-    def _on_mcts_slider_changed(self, value: int):
-        """MCTS模拟次数滑动条变化"""
-        self.num_mcts_simulations = value
-        self.lbl_mcts_val.setText(str(value))
-        gpu_tag = "GPU" if self.device.type == 'cuda' else "CPU"
-        self.lbl_ai_info.setText(f"AI: MCTS {value}次 [{gpu_tag}]")
-
-    def _on_trad_depth_changed(self, value: int):
-        """传统AI搜索深度滑动条变化"""
-        self.traditional_ai.set_depth(value)
-        self.lbl_trad_depth_val.setText(str(value))
 
     def _on_parallel_changed(self, value: int):
         """并行对弈局数滑动条变化"""

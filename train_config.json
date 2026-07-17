@@ -1,4 +1,5 @@
 {
+  "_comment": "五子棋AI训练配置文件 v2.0 - 硬件自适应。留空字段由 hardware_auto_config 自动填充",
   "training": {
     "modes": ["self", "trad"],
     "learning_rate": 0.02,
@@ -6,10 +7,13 @@
     "num_mcts_simulations": 400,
     "total_steps": 500000,
     "use_cuda": true,
+    "mixed_precision": true,
+    "gradient_accumulation_steps": 1,
     "model_dir": "./models",
     "log_dir": "./logs",
     "save_interval_minutes": 5,
     "auto_eval_games": 100,
+    "eval_interval_steps": 5000,
     "self_play": {
       "num_processes": 4,
       "mcts_simulations": 400
@@ -28,11 +32,20 @@
     },
     "replay_buffer": {
       "capacity": 2000000,
+      "prioritized_alpha": 0.6,
+      "prioritized_beta": 0.4,
       "sampling_weights": {
         "self": 0.6,
         "trad": 0.3,
         "human": 0.1
       }
+    },
+    "augmentation": {
+      "enabled": true,
+      "symmetry": true
     }
+  },
+  "network": {
+    "_auto": "留空则根据GPU显存自动选择通道数和残差块数"
   }
 }

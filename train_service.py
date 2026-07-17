@@ -93,7 +93,20 @@ def load_config(config_path: str) -> dict:
 
 
 def _default_config() -> dict:
-    """默认训练配置"""
+    """
+    默认训练配置 v2.0 — 优先使用硬件自动检测的推荐值。
+
+    如果 hardware_auto_config 可用，使用其推荐的参数；
+    否则使用保守的通用默认值。
+    """
+    try:
+        from hardware_auto_config import get_auto_config
+        auto_config = get_auto_config()
+        return auto_config
+    except Exception:
+        pass
+
+    # 硬件检测失败时的保守默认值
     return {
         'training': {
             'modes': ['self', 'trad'],
@@ -102,6 +115,8 @@ def _default_config() -> dict:
             'num_mcts_simulations': 400,
             'total_steps': 500000,
             'use_cuda': True,
+            'mixed_precision': True,
+            'gradient_accumulation_steps': 1,
             'model_dir': os.path.join(PROJECT_DIR, 'models'),
             'log_dir': os.path.join(PROJECT_DIR, 'logs'),
             'save_interval_minutes': 5,
@@ -124,11 +139,17 @@ def _default_config() -> dict:
             },
             'replay_buffer': {
                 'capacity': 2000000,
+                'prioritized_alpha': 0.6,
+                'prioritized_beta': 0.4,
                 'sampling_weights': {
                     'self': 0.6,
                     'trad': 0.3,
                     'human': 0.1,
                 }
+            },
+            'augmentation': {
+                'enabled': True,
+                'symmetry': True,
             }
         }
     }
@@ -195,10 +216,30 @@ def main():
     logger = setup_logging(log_dir, args.log_level)
 
     logger.info("=" * 60)
-    logger.info("五子棋AI静默训练服务启动")
+    logger.info("五子棋AI静默训练服务启动 v2.0")
     logger.info(f"时间: {datetime.now().isoformat()}")
     logger.info(f"配置文件: {args.config}")
     logger.info(f"训练模式: {config.get('training', {}).get('modes', ['self'])}")
+
+    # 打印硬件信息
+    try:
+        from hardware_auto_config import get_hardware_summary, format_hardware_summary
+        hw = get_hardware_summary()
+        for line in format_hardware_summary(hw).split('\n'):
+            if line.strip():
+                logger.info(line)
+    except Exception:
+        pass
+
+    # 打印推荐配置概述
+    train_cfg = config.get('training', {})
+    net_cfg = config.get('network', {})
+    logger.info(f"网络: {net_cfg.get('num_filters', 128)}通道, "
+                f"{net_cfg.get('num_res_blocks', 7)}残差块")
+    logger.info(f"训练: batch={train_cfg.get('batch_size')}, "
+                f"MCTS={train_cfg.get('num_mcts_simulations')}, "
+                f"LR={train_cfg.get('learning_rate')}, "
+                f"AMP={train_cfg.get('mixed_precision', False)}")
     logger.info("=" * 60)
 
     # 检查人机模式（后台服务不支持）
